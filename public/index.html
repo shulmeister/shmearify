@@ -397,6 +397,8 @@
     return r.json();
   }
 
+  let pollCount = 0;
+  let wasScanning = false;
   async function pollStatus() {
     try {
       state.status = await fetchJson("api/status");
@@ -404,7 +406,21 @@
       // ignore
     }
     renderState();
-    if (!state.status.ready || state.status.scanning) {
+    // Phase-2 enrichment fills in real durations/titles on the server over time. Refresh the
+    // client so total times + transcoded-stream seeking work without a manual reload: once when
+    // the scan finishes, and periodically (~every 2 min) while it runs. (Playback isn't
+    // interrupted — only the list/sidebar re-render.)
+    pollCount += 1;
+    const s = state.status;
+    if (s.ready && state.library.length > 0) {
+      if (wasScanning && !s.scanning) {
+        loadLibrary();
+      } else if (s.scanning && pollCount % 60 === 0) {
+        loadLibrary();
+      }
+    }
+    wasScanning = s.scanning;
+    if (!s.ready || s.scanning) {
       setTimeout(pollStatus, 2000);
     }
   }

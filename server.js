@@ -87,7 +87,13 @@ function buildTrackFromPath(absPath) {
   const filename = path.basename(absPath, path.extname(absPath));
   const parsed = parseTitleFromFilename(filename);
 
-  const artist = parts[0] || "Unknown Artist";
+  // Artist/album come from the FOLDER structure — the user curates folder names, while ID3 tags
+  // are inconsistent and create duplicate/garbage entries (one "2Pac" folder, tracks tagged
+  // "2 Pac"/"2Pac"/"2pac"; junk artist tags like "02"). Phase 2 only fills these from ID3 in the
+  // edge cases where the folder genuinely lacks the info (loose root files, "Compilations"
+  // folders, and 2-segment Artist/file paths with no album folder).
+  const hasArtistFolder = parts.length >= 2 && parts[0].toLowerCase() !== "compilations";
+  const artist = hasArtistFolder ? parts[0] : "Unknown Artist";
   const album = parts.length >= 3 ? parts[parts.length - 2] : "Unknown Album";
 
   return {
@@ -176,6 +182,15 @@ async function buildIndex() {
 
       const common = meta && meta.common ? meta.common : {};
       const format = meta && meta.format ? meta.format : {};
+
+      // Folder-derived artist/album are authoritative (they de-dupe inconsistent tags). Fall back
+      // to ID3 ONLY in the edge cases where the folder lacked the info: loose root files or a
+      // "Compilations" top folder (no real artist folder) → ID3 artist; 2-segment Artist/file
+      // paths (no album folder) → ID3 album. Never override a real folder artist/album.
+      const parts = relPath.split(path.sep);
+      const artistFromFolder = parts.length >= 2 && parts[0].toLowerCase() !== "compilations";
+      if (!artistFromFolder && common.artist) track.artist = common.artist;
+      if (parts.length < 3 && common.album) track.album = common.album;
 
       if (common.title) track.title = common.title;
       track.duration = formatDuration(format.duration);
