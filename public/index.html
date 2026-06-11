@@ -344,9 +344,11 @@
 (function() {
   const state = {
     artists: [],          // [{ name, count }] — lightweight, from /api/artists
-    tracks: [],           // currently displayed tracks (one artist, or search hits)
+    albums: [],           // [{ album, count }] — shows for the selected artist
+    tracks: [],           // currently displayed tracks (one show, or search hits)
     viewTotal: 0,         // true total for the current view (may exceed tracks.length, which is capped)
     selectedArtist: null,
+    selectedAlbum: null,  // when set with selectedArtist, we're viewing one show's songs
     search: "",
     queue: [],
     queueIndex: -1,
@@ -439,39 +441,60 @@
   function refreshCurrentView() {
     if (state.search.trim()) {
       runSearch(state.search, true);
-    } else if (state.selectedArtist) {
-      loadArtistTracks(state.selectedArtist, true);
+    } else if (state.selectedArtist && state.selectedAlbum) {
+      loadAlbumTracks(state.selectedArtist, state.selectedAlbum, true);
     }
   }
 
-  async function loadArtistTracks(name, silent) {
+  // Picking a band shows its SHOWS (albums), not a flat song list. For the Dead that's hundreds of
+  // date/venue shows; you pick a show, then a song. (One-album artists skip straight to the songs.)
+  async function loadArtistAlbums(name, silent) {
     state.selectedArtist = name;
+    state.selectedAlbum = null;
     if (!silent) {
-      // Picking a band focuses the view on it — clear the filter box and reset the nav.
       state.search = "";
       els.searchBox.value = "";
+      renderArtists();
     }
     try {
-      const data = await fetchJson("api/tracks?artist=" + encodeURIComponent(name));
-      state.tracks = data.tracks || [];
-      state.viewTotal = data.total || state.tracks.length;
+      state.albums = await fetchJson("api/albums?artist=" + encodeURIComponent(name)); // [{album,count}]
+    } catch (e) {
+      state.albums = [];
+    }
+    if (state.albums.length === 1) {
+      loadAlbumTracks(name, state.albums[0].album, silent);
+      return;
+    }
+    renderMain();
+  }
+
+  async function loadAlbumTracks(artist, album, silent) {
+    state.selectedArtist = artist;
+    state.selectedAlbum = album;
+    try {
+      state.tracks = await fetchJson(
+        "api/album-tracks?artist=" + encodeURIComponent(artist) + "&album=" + encodeURIComponent(album)
+      );
+      state.viewTotal = state.tracks.length;
     } catch (e) {
       state.tracks = [];
       state.viewTotal = 0;
     }
-    if (!silent) renderArtists();
-    renderTracks();
+    renderMain();
   }
 
   let searchSeq = 0;
   async function runSearch(q, silent) {
     state.search = q;
-    if (!silent) state.selectedArtist = null;
+    if (!silent) {
+      state.selectedArtist = null;
+      state.selectedAlbum = null;
+    }
     const trimmed = q.trim();
     if (!trimmed) {
       state.tracks = [];
       state.viewTotal = 0;
-      renderTracks();
+      renderMain();
       return;
     }
     const seq = ++searchSeq;
@@ -485,7 +508,7 @@
       state.tracks = [];
       state.viewTotal = 0;
     }
-    renderTracks();
+    renderMain();
   }
 
   function renderState() {
@@ -510,7 +533,7 @@
       return;
     }
     if (!els.trackPanel.innerHTML.trim()) {
-      renderTracks();
+      renderMain();
     }
   }
 
@@ -542,11 +565,12 @@
       if (!state.selectedArtist) home.classList.add("active");
       home.addEventListener("click", () => {
         state.selectedArtist = null;
+        state.selectedAlbum = null;
         state.search = "";
         els.searchBox.value = "";
         state.tracks = [];
         renderArtists();
-        renderTracks();
+        renderMain();
         closeSidebarOnMobile();
       });
       frag.appendChild(home);
@@ -559,7 +583,7 @@
       li.title = a.name + " · " + a.count + (a.count === 1 ? " track" : " tracks");
       if (state.selectedArtist === a.name) li.classList.add("active");
       li.addEventListener("click", () => {
-        loadArtistTracks(a.name);
+        loadArtistAlbums(a.name);
         closeSidebarOnMobile();
       });
       frag.appendChild(li);
@@ -595,30 +619,111 @@
     }
   }
 
+  // Dispatcher: search hits → track table; artist+show → that show's songs; artist only → its
+  // shows; nothing → home summary.
+  function renderMain() {
+    if (state.search.trim()) return renderTracks();
+    if (state.selectedArtist && state.selectedAlbum) return renderTracks();
+    if (state.selectedArtist) return renderAlbums();
+    return renderHome();
+  }
+
+  function appendScanBadge(frag) {
+    if (!state.status.scanning) return;
+    const headerEl = frag.querySelector(".main-header");
+    if (!headerEl) return;
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = "Indexing…";
+    headerEl.appendChild(badge);
+  }
+
+  function renderHome() {
+    const frag = document.createDocumentFragment();
+    const header = document.createElement("div");
+    header.className = "main-header";
+    header.textContent = "Home";
+    frag.appendChild(header);
+    const summary = document.createElement("div");
+    summary.className = "summary-line";
+    summary.textContent = formatNumber(state.artists.length) + " artists · " +
+      formatNumber(state.status.trackCount) + " tracks — pick an artist on the left, or search.";
+    frag.appendChild(summary);
+    appendScanBadge(frag);
+    els.trackPanel.innerHTML = "";
+    els.trackPanel.appendChild(frag);
+  }
+
+  // Shows/albums for the selected artist. For the Dead these are date-prefixed shows, in order.
+  function renderAlbums() {
+    const frag = document.createDocumentFragment();
+    const header = document.createElement("div");
+    header.className = "main-header";
+    header.textContent = state.selectedArtist;
+    frag.appendChild(header);
+
+    const sub = document.createElement("div");
+    sub.className = "summary-line";
+    sub.textContent = formatNumber(state.albums.length) +
+      (state.albums.length === 1 ? " show / album — pick it." : " shows / albums — pick one.");
+    frag.appendChild(sub);
+
+    if (state.albums.length === 0) {
+      const empty = document.createElement("div");
+      empty.style.color = "#b3b3b3";
+      empty.style.fontSize = "13px";
+      empty.textContent = state.status.scanning ? "Still indexing…" : "No shows found.";
+      frag.appendChild(empty);
+    } else {
+      const listEl = document.createElement("div");
+      for (const al of state.albums) {
+        const row = document.createElement("div");
+        row.style.cssText = "padding:12px;border-bottom:1px solid #181818;cursor:pointer;font-size:14px;" +
+          "display:flex;justify-content:space-between;gap:12px;color:#cfcfcf;";
+        const name = document.createElement("span");
+        name.textContent = al.album;
+        name.style.cssText = "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+        const count = document.createElement("span");
+        count.textContent = al.count;
+        count.style.cssText = "color:#888;flex:0 0 auto;";
+        row.appendChild(name);
+        row.appendChild(count);
+        row.addEventListener("mouseenter", () => { row.style.background = "#1a1a1a"; row.style.color = "#fff"; });
+        row.addEventListener("mouseleave", () => { row.style.background = ""; row.style.color = "#cfcfcf"; });
+        row.addEventListener("click", () => loadAlbumTracks(state.selectedArtist, al.album));
+        listEl.appendChild(row);
+      }
+      frag.appendChild(listEl);
+    }
+
+    appendScanBadge(frag);
+    els.trackPanel.innerHTML = "";
+    els.trackPanel.appendChild(frag);
+  }
+
+  // Track table — used for search results and for one show's songs.
   function renderTracks() {
     const tracks = state.tracks;
     const isSearch = !!state.search.trim();
+    const inAlbum = !isSearch && state.selectedArtist && state.selectedAlbum;
     const frag = document.createDocumentFragment();
+
+    if (inAlbum) {
+      const back = document.createElement("div");
+      back.style.cssText = "font-size:13px;color:#1db954;cursor:pointer;margin-bottom:8px;";
+      back.textContent = "← " + state.selectedArtist;
+      back.addEventListener("click", () => loadArtistAlbums(state.selectedArtist));
+      frag.appendChild(back);
+    }
 
     const header = document.createElement("div");
     header.className = "main-header";
-    if (isSearch) {
-      header.textContent = 'Search: "' + state.search.trim() + '"';
-    } else if (state.selectedArtist) {
-      header.textContent = state.selectedArtist;
-    } else {
-      header.textContent = "Home";
-    }
+    if (isSearch) header.textContent = 'Search: "' + state.search.trim() + '"';
+    else if (state.selectedAlbum) header.textContent = state.selectedAlbum;
+    else header.textContent = state.selectedArtist || "Library";
     frag.appendChild(header);
 
-    if (!isSearch && !state.selectedArtist) {
-      // Home view — counts come from the server (status + artist list), not a client-held library.
-      const summary = document.createElement("div");
-      summary.className = "summary-line";
-      summary.textContent = formatNumber(state.artists.length) + " artists · " +
-        formatNumber(state.status.trackCount) + " tracks — pick an artist on the left, or search.";
-      frag.appendChild(summary);
-    } else if (tracks.length === 0) {
+    if (tracks.length === 0) {
       const empty = document.createElement("div");
       empty.style.color = "#b3b3b3";
       empty.style.fontSize = "13px";
@@ -639,15 +744,15 @@
         const tr = document.createElement("tr");
         if (state.currentTrack && state.currentTrack.id === t.id) tr.classList.add("playing");
         const dur = t.duration ? formatTime(t.duration) : "--:--";
-        tr.innerHTML = '<td>' + (i + 1) + '</td><td>' + esc(t.title) + '</td><td>' + esc(t.artist) + '</td><td>' + esc(t.album) + '</td><td>' + dur + '</td>';
+        // In a show, use the real track number for ordering; in search, fall back to row index.
+        const num = inAlbum && t.trackNo ? t.trackNo : (i + 1);
+        tr.innerHTML = '<td>' + num + '</td><td>' + esc(t.title) + '</td><td>' + esc(t.artist) + '</td><td>' + esc(t.album) + '</td><td>' + dur + '</td>';
         tr.addEventListener("click", () => playTrack(t, tracks));
         tbody.appendChild(tr);
       });
       table.appendChild(tbody);
       frag.appendChild(table);
 
-      // The server caps both search (500) and per-artist (1000) responses but reports the true
-      // total. Only show the "showing first N" note when there's genuinely more than displayed.
       const total = state.viewTotal || tracks.length;
       if (total > toShow.length) {
         const note = document.createElement("div");
@@ -660,13 +765,7 @@
       }
     }
 
-    if (state.status.scanning && frag.firstChild) {
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = "Indexing…";
-      frag.firstChild.appendChild(badge);
-    }
-
+    appendScanBadge(frag);
     els.trackPanel.innerHTML = "";
     els.trackPanel.appendChild(frag);
   }
@@ -694,7 +793,7 @@
     els.audio.play().catch(() => {});
     state.isPlaying = true;
     updatePlayerUI();
-    renderTracks();
+    renderMain();
     closeSidebarOnMobile();
   }
 

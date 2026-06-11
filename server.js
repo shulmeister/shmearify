@@ -32,6 +32,15 @@ let scanState = { scanning: false, scanned: 0, total: null };
 let artCache = new Map();
 const ART_CACHE_MAX = 300;
 
+// Count of in-flight audio streams. Phase-2 enrichment yields the disk to active playback (both
+// read from the same external USB drive — concurrent metadata reads starve the audio read and
+// cause stutter on mobile). Metadata is non-urgent, so smooth streaming wins.
+let activeStreams = 0;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function makeId(relPath) {
   return crypto.createHash("sha1").update(relPath).digest("hex").slice(0, 16);
 }
@@ -156,8 +165,9 @@ async function buildIndex() {
     console.log(`[scan] phase-1 live — ${library.length} tracks ready`);
   }
 
-  // Phase 2 — background ID3 enrichment
-  const limit = pLimit(8);
+  // Phase 2 — background ID3 enrichment. Low concurrency (4) to leave the external drive headroom
+  // for streaming; each worker fully pauses while any audio stream is active (see activeStreams).
+  const limit = pLimit(4);
   let lastLogged = 0;
 
   // Build id → track map for in-place updates
@@ -172,6 +182,11 @@ async function buildIndex() {
       const id = makeId(relPath);
       const track = trackById.get(id);
       if (!track) return;
+
+      // Yield the disk to active playback — pause enrichment entirely while anything is streaming.
+      while (activeStreams > 0) {
+        await sleep(400);
+      }
 
       let meta;
       try {
@@ -303,6 +318,33 @@ app.get("/api/tracks", (req, res) => {
   res.json({ tracks: all.slice(0, 1000), total: all.length });
 });
 
+// Albums for an artist — for live tapers (Grateful Dead) the "album" folder is a show
+// (`YYYY-MM-DD - Venue - City`), so this is the show list. Date-prefixed names sort chronologically
+// as plain strings. Lightweight: name + track count only.
+app.get("/api/albums", (req, res) => {
+  const artist = typeof req.query.artist === "string" ? req.query.artist : "";
+  if (!artist) return res.json([]);
+  const counts = new Map();
+  for (const t of library) {
+    if (t.artist !== artist) continue;
+    const al = t.album || "Unknown Album";
+    counts.set(al, (counts.get(al) || 0) + 1);
+  }
+  const arr = Array.from(counts.entries())
+    .map(([album, count]) => ({ album, count }))
+    .sort((a, b) => a.album.localeCompare(b.album, undefined, { numeric: true, sensitivity: "base" }));
+  res.json(arr);
+});
+
+// Tracks for one artist + album (one show), already in track order (library is pre-sorted by
+// artist → album → trackNo → title, so a filter preserves order). A show is small; no cap needed.
+app.get("/api/album-tracks", (req, res) => {
+  const artist = typeof req.query.artist === "string" ? req.query.artist : "";
+  const album = typeof req.query.album === "string" ? req.query.album : "";
+  if (!artist || !album) return res.json([]);
+  res.json(library.filter((t) => t.artist === artist && t.album === album));
+});
+
 // Server-side search across title/artist/album. Returns up to `max` hits plus a total count so
 // the client never has to hold the whole library to search it. Works mid-scan against the live array.
 app.get("/api/search", (req, res) => {
@@ -339,6 +381,18 @@ app.get("/stream/:id", (req, res) => {
   } catch (err) {
     return res.status(404).json({ error: "Track file missing" });
   }
+
+  // Mark this as an active stream so background enrichment yields the disk. Decrement exactly once
+  // when the connection closes (covers normal end, client abort, and errors; both quality paths).
+  activeStreams += 1;
+  let streamCounted = true;
+  const releaseStream = () => {
+    if (streamCounted) {
+      streamCounted = false;
+      activeStreams = Math.max(0, activeStreams - 1);
+    }
+  };
+  res.on("close", releaseStream);
 
   const q = req.query.q;
   const quality = typeof q === "string" ? q.toLowerCase() : "";
