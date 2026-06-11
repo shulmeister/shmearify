@@ -79,8 +79,19 @@ async function buildIndex() {
   scanState.total = fileList.length;
   console.log(`[scan] found ${fileList.length} audio files`);
 
+  // Cold start (empty library / first scan): populate the LIVE index incrementally so a very
+  // large library (this one is ~289k tracks) becomes browsable and playable as it scans,
+  // instead of after a multi-hour wait. Rescan (library already populated): build into a
+  // local buffer and swap atomically at the end so the live index is never disrupted.
+  const cold = library.length === 0;
+  const buffer = cold ? library : [];
+  if (cold) {
+    buffer.length = 0;
+    idMap = new Map();
+  }
+  const liveMap = cold ? idMap : new Map();
+
   const limit = pLimit(8);
-  const tracks = [];
   let lastLogged = 0;
 
   const tasks = fileList.map((absPath) =>
@@ -112,7 +123,8 @@ async function buildIndex() {
         trackNo: common.track && common.track.no ? common.track.no : null,
       };
 
-      tracks.push(track);
+      buffer.push(track);
+      liveMap.set(track.id, path.join(MUSIC_PATH, track.relPath));
       scanState.scanned += 1;
 
       if (scanState.scanned - lastLogged >= 500) {
@@ -125,7 +137,7 @@ async function buildIndex() {
   await Promise.all(tasks);
 
   // Sort by artist, album, trackNo, title for stable ordering
-  tracks.sort((a, b) => {
+  buffer.sort((a, b) => {
     const c = (a.artist || "").localeCompare(b.artist || "", undefined, { sensitivity: "base" });
     if (c !== 0) return c;
     const d = (a.album || "").localeCompare(b.album || "", undefined, { sensitivity: "base" });
@@ -135,23 +147,19 @@ async function buildIndex() {
     return (a.title || "").localeCompare(b.title || "", undefined, { sensitivity: "base" });
   });
 
-  library = tracks;
-  const newMap = new Map();
-  for (const t of tracks) {
-    newMap.set(t.id, path.join(MUSIC_PATH, t.relPath));
-  }
-  idMap = newMap;
+  library = buffer;
+  idMap = liveMap;
 
   try {
     const tmp = CACHE_PATH + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(tracks));
+    fs.writeFileSync(tmp, JSON.stringify(library));
     fs.renameSync(tmp, CACHE_PATH);
   } catch (err) {
     console.error("[scan] cache write failed:", err.message);
   }
 
   scanState = { scanning: false, scanned: scanState.scanned, total: scanState.total };
-  console.log(`[scan] complete — ${tracks.length} tracks in ${(Date.now() - startTime) / 1000}s`);
+  console.log(`[scan] complete — ${library.length} tracks in ${(Date.now() - startTime) / 1000}s`);
 }
 
 function loadCache() {
