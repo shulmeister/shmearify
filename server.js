@@ -268,6 +268,49 @@ app.get("/api/library", (req, res) => {
   res.json(library);
 });
 
+// Lightweight artist list for the sidebar — names + track counts only, never the full library.
+// A 289k-track library yields ~4k artists (~150 KB) vs. ~74 MB for /api/library, so this loads
+// instantly on mobile and desktop alike. Computed on demand; the in-memory loop is sub-ms.
+app.get("/api/artists", (req, res) => {
+  const counts = new Map();
+  for (const t of library) {
+    const a = t.artist || "Unknown Artist";
+    counts.set(a, (counts.get(a) || 0) + 1);
+  }
+  const arr = Array.from(counts.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  res.json(arr);
+});
+
+// Tracks for a single artist — lazy-loaded when the user picks an artist.
+app.get("/api/tracks", (req, res) => {
+  const artist = typeof req.query.artist === "string" ? req.query.artist : "";
+  if (!artist) return res.json([]);
+  res.json(library.filter((t) => t.artist === artist));
+});
+
+// Server-side search across title/artist/album. Returns up to `max` hits plus a total count so
+// the client never has to hold the whole library to search it. Works mid-scan against the live array.
+app.get("/api/search", (req, res) => {
+  const q = (typeof req.query.q === "string" ? req.query.q : "").trim().toLowerCase();
+  if (!q) return res.json({ tracks: [], total: 0 });
+  const max = 500;
+  const out = [];
+  let total = 0;
+  for (const t of library) {
+    if (
+      (t.title && t.title.toLowerCase().includes(q)) ||
+      (t.artist && t.artist.toLowerCase().includes(q)) ||
+      (t.album && t.album.toLowerCase().includes(q))
+    ) {
+      total += 1;
+      if (out.length < max) out.push(t);
+    }
+  }
+  res.json({ tracks: out, total });
+});
+
 app.get("/stream/:id", (req, res) => {
   if (!isMounted()) {
     return res.status(503).json({ error: "Music drive not mounted" });

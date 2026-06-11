@@ -289,7 +289,7 @@
   <main class="main" id="main">
     <div class="hero">
       <h2>Shmearify</h2>
-      <p class="hero-tag">Your whole library, anywhere.</p>
+      <p class="hero-tag">Tommy Engelshmear's whole library, anywhere.</p>
     </div>
     <div id="trackPanel"></div>
   </main>
@@ -343,8 +343,9 @@
 <script>
 (function() {
   const state = {
-    library: [],
-    artists: [],
+    artists: [],          // [{ name, count }] — lightweight, from /api/artists
+    tracks: [],           // currently displayed tracks (one artist, or search hits)
+    searchTotal: 0,       // total search matches (may exceed tracks.length, which is capped)
     selectedArtist: null,
     search: "",
     queue: [],
@@ -397,61 +398,102 @@
     return r.json();
   }
 
+  let artistsLoaded = false;
   let pollCount = 0;
-  let wasScanning = false;
   async function pollStatus() {
     try {
       state.status = await fetchJson("api/status");
     } catch (e) {
       // ignore
     }
-    renderState();
-    // Phase-2 enrichment fills in real durations/titles on the server over time. Refresh the
-    // client so total times + transcoded-stream seeking work without a manual reload: once when
-    // the scan finishes, and periodically (~every 2 min) while it runs. (Playback isn't
-    // interrupted — only the list/sidebar re-render.)
-    pollCount += 1;
-    const s = state.status;
-    if (s.ready && state.library.length > 0) {
-      if (wasScanning && !s.scanning) {
-        loadLibrary();
-      } else if (s.scanning && pollCount % 60 === 0) {
-        loadLibrary();
-      }
+    // As soon as the server has any tracks, pull the lightweight artist list once. We never fetch
+    // the whole library to the client — search and per-artist tracks are served on demand.
+    if (state.status.ready && !artistsLoaded) {
+      artistsLoaded = true;
+      await loadArtists();
     }
-    wasScanning = s.scanning;
-    if (!s.ready || s.scanning) {
-      setTimeout(pollStatus, 2000);
+    renderState();
+    // Phase-2 enrichment fills real durations on the server over time. Folder-based artist names
+    // are fixed in phase 1, so the sidebar is stable — but refresh the *current* view every ~30s
+    // while scanning so durations (and transcoded-seek) fill in without a manual reload.
+    pollCount += 1;
+    if (state.status.scanning && artistsLoaded && pollCount % 10 === 0) {
+      refreshCurrentView();
+    }
+    if (!state.status.ready || state.status.scanning) {
+      setTimeout(pollStatus, 3000);
     }
   }
 
-  async function loadLibrary() {
+  async function loadArtists() {
     try {
-      state.library = await fetchJson("api/library");
-      const set = new Set();
-      for (const t of state.library) {
-        if (t.artist) set.add(t.artist);
-      }
-      state.artists = Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+      state.artists = await fetchJson("api/artists"); // [{ name, count }]
       renderArtists();
-      renderTracks();
     } catch (e) {
       // ignore
     }
   }
 
-  function renderState() {
-    const s = state.status;
-    if (s.ready && state.library.length === 0) {
-      loadLibrary();
+  // Reload whatever the user is currently looking at (an artist's tracks or a search) from the
+  // server, picking up newly-enriched durations. No-op on the empty/home view.
+  function refreshCurrentView() {
+    if (state.search.trim()) {
+      runSearch(state.search, true);
+    } else if (state.selectedArtist) {
+      loadArtistTracks(state.selectedArtist, true);
+    }
+  }
+
+  async function loadArtistTracks(name, silent) {
+    state.selectedArtist = name;
+    if (!silent) {
+      state.search = "";
+      els.searchBox.value = "";
+    }
+    try {
+      state.tracks = await fetchJson("api/tracks?artist=" + encodeURIComponent(name));
+    } catch (e) {
+      state.tracks = [];
+    }
+    renderTracks();
+  }
+
+  let searchSeq = 0;
+  async function runSearch(q, silent) {
+    state.search = q;
+    if (!silent) state.selectedArtist = null;
+    const trimmed = q.trim();
+    if (!trimmed) {
+      state.tracks = [];
+      state.searchTotal = 0;
+      renderTracks();
       return;
     }
+    const seq = ++searchSeq;
+    try {
+      const data = await fetchJson("api/search?q=" + encodeURIComponent(trimmed));
+      if (seq !== searchSeq) return; // a newer search superseded this one
+      state.tracks = data.tracks;
+      state.searchTotal = data.total;
+    } catch (e) {
+      if (seq !== searchSeq) return;
+      state.tracks = [];
+      state.searchTotal = 0;
+    }
+    renderTracks();
+  }
+
+  function renderState() {
+    const s = state.status;
+    // "ready" means the server has tracks indexed (phase-1 path scan done). Until then, show a
+    // status panel. Background ID3 enrichment (s.scanning) does NOT block — the app is fully
+    // usable from folder-based names the moment it's ready.
     if (!s.ready) {
       let html = '<div class="center-panel">';
       if (!s.mounted) {
         html += '<div style="font-size:14px;">Music drive not mounted — connect the drive and restart/rescan</div>';
       } else if (s.scanning) {
-        html += '<div style="font-size:14px;">Scanning your library…';
+        html += '<div style="font-size:14px;">Building your library…';
         if (s.total) html += ' ' + s.scanned + ' of ' + s.total + ' tracks';
         html += '</div>';
         html += '<div class="progress-bar-outer' + (s.total ? '' : ' indeterminate') + '"><div class="progress-bar-inner" style="width:' + (s.total ? Math.round((s.scanned / s.total) * 100) : 0) + '%"></div></div>';
@@ -462,31 +504,34 @@
       els.trackPanel.innerHTML = html;
       return;
     }
-    if (state.library.length > 0 && !els.trackPanel.innerHTML.trim()) {
+    if (!els.trackPanel.innerHTML.trim()) {
       renderTracks();
     }
   }
 
   function renderArtists() {
     const frag = document.createDocumentFragment();
-    const all = document.createElement("li");
-    all.textContent = "All tracks";
-    if (!state.selectedArtist) all.classList.add("active");
-    all.addEventListener("click", () => {
+    const home = document.createElement("li");
+    home.textContent = "Home";
+    if (!state.selectedArtist && !state.search.trim()) home.classList.add("active");
+    home.addEventListener("click", () => {
       state.selectedArtist = null;
-      setActiveArtist(all);
+      state.search = "";
+      els.searchBox.value = "";
+      state.tracks = [];
+      setActiveArtist(home);
       renderTracks();
       closeSidebarOnMobile();
     });
-    frag.appendChild(all);
+    frag.appendChild(home);
     for (const a of state.artists) {
       const li = document.createElement("li");
-      li.textContent = a;
-      if (state.selectedArtist === a) li.classList.add("active");
+      li.textContent = a.name;
+      li.title = a.name + " · " + a.count + (a.count === 1 ? " track" : " tracks");
+      if (state.selectedArtist === a.name) li.classList.add("active");
       li.addEventListener("click", () => {
-        state.selectedArtist = a;
         setActiveArtist(li);
-        renderTracks();
+        loadArtistTracks(a.name);
         closeSidebarOnMobile();
       });
       frag.appendChild(li);
@@ -506,49 +551,34 @@
     }
   }
 
-  function getVisibleTracks() {
-    const q = state.search.trim().toLowerCase();
-    let list = state.library;
-    if (q) {
-      list = list.filter(t =>
-        (t.title && t.title.toLowerCase().includes(q)) ||
-        (t.artist && t.artist.toLowerCase().includes(q)) ||
-        (t.album && t.album.toLowerCase().includes(q))
-      );
-    } else if (state.selectedArtist) {
-      list = list.filter(t => t.artist === state.selectedArtist);
-    } else {
-      return [];
-    }
-    return list;
-  }
-
   function renderTracks() {
-    const tracks = getVisibleTracks();
+    const tracks = state.tracks;
+    const isSearch = !!state.search.trim();
     const frag = document.createDocumentFragment();
 
     const header = document.createElement("div");
     header.className = "main-header";
-    if (state.search.trim()) {
+    if (isSearch) {
       header.textContent = 'Search: "' + state.search.trim() + '"';
     } else if (state.selectedArtist) {
       header.textContent = state.selectedArtist;
     } else {
-      header.textContent = "Library";
+      header.textContent = "Home";
     }
     frag.appendChild(header);
 
-    if (tracks.length === 0 && !state.search.trim() && !state.selectedArtist) {
+    if (!isSearch && !state.selectedArtist) {
+      // Home view — counts come from the server (status + artist list), not a client-held library.
       const summary = document.createElement("div");
       summary.className = "summary-line";
-      const artistCount = new Set(state.library.map(t => t.artist)).size;
-      summary.textContent = formatNumber(artistCount) + " artists · " + formatNumber(state.library.length) + " tracks — pick one on the left, or search.";
+      summary.textContent = formatNumber(state.artists.length) + " artists · " +
+        formatNumber(state.status.trackCount) + " tracks — pick an artist on the left, or search.";
       frag.appendChild(summary);
     } else if (tracks.length === 0) {
       const empty = document.createElement("div");
       empty.style.color = "#b3b3b3";
       empty.style.fontSize = "13px";
-      empty.textContent = "No tracks found.";
+      empty.textContent = state.status.scanning ? "No matches yet — still indexing…" : "No tracks found.";
       frag.appendChild(empty);
     } else {
       const limit = 500;
@@ -572,20 +602,24 @@
       table.appendChild(tbody);
       frag.appendChild(table);
 
-      if (tracks.length > limit) {
+      // For search, the server caps results at 500 but reports the true total; for an artist the
+      // list is whole. Only show the "showing first N" note when there's genuinely more.
+      const total = isSearch ? state.searchTotal : tracks.length;
+      if (total > toShow.length) {
         const note = document.createElement("div");
         note.style.color = "#b3b3b3";
         note.style.fontSize = "12px";
         note.style.marginTop = "8px";
-        note.textContent = "Showing first " + limit + " of " + tracks.length + " — refine your search.";
+        note.textContent = "Showing first " + toShow.length + " of " + formatNumber(total) +
+          (isSearch ? " matches — refine your search." : " tracks.");
         frag.appendChild(note);
       }
     }
 
-    if (state.status.scanning) {
+    if (state.status.scanning && frag.firstChild) {
       const badge = document.createElement("span");
       badge.className = "badge";
-      badge.textContent = "Scanning…";
+      badge.textContent = "Indexing…";
       frag.firstChild.appendChild(badge);
     }
 
@@ -755,9 +789,8 @@
   els.searchBox.addEventListener("input", () => {
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
-      state.search = els.searchBox.value;
-      renderTracks();
-    }, 200);
+      runSearch(els.searchBox.value);
+    }, 250);
   });
 
   els.mobileToggle.addEventListener("click", () => {
@@ -785,7 +818,6 @@
   } catch (e) {}
 
   pollStatus();
-  if (state.status.ready) loadLibrary();
 })();
 </script>
 </body>
