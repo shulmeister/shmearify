@@ -5,10 +5,12 @@ const path = require("path");
 const crypto = require("crypto");
 const mm = require("music-metadata");
 const pLimit = require("p-limit");
+const { spawn } = require("child_process");
 
 const MUSIC_PATH = process.env.MUSIC_PATH || "/Volumes/Shulmeister HD/iTunes/Music";
 const PORT = process.env.PORT || 3005;
 const CACHE_PATH = path.join(__dirname, "library-cache.json");
+const FFMPEG_PATH = process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg";
 const AUDIO_EXTS = new Set([".mp3", ".m4a", ".flac", ".aac", ".wav", ".ogg"]);
 const MIME_TYPES = {
   ".mp3": "audio/mpeg",
@@ -17,6 +19,11 @@ const MIME_TYPES = {
   ".aac": "audio/aac",
   ".wav": "audio/wav",
   ".ogg": "audio/ogg",
+};
+const QUALITY_BITRATES = {
+  high: "256k",
+  normal: "128k",
+  low: "96k",
 };
 
 let library = [];
@@ -60,6 +67,54 @@ function formatDuration(sec) {
   return Math.round(sec * 10) / 10;
 }
 
+function parseTitleFromFilename(filename) {
+  // Pattern 1: disc-track prefix, e.g. "1-03 Song Name"
+  const discTrack = /^\d{1,2}-(\d{1,2})[ .]+(\S.*)$/.exec(filename);
+  if (discTrack) {
+    return { title: discTrack[2], trackNo: parseInt(discTrack[1], 10) };
+  }
+  // Pattern 2: plain track number prefix, e.g. "01 Song", "03. Song", "07 - Song"
+  const plain = /^(\d{1,2})[ .\-]+(\S.*)$/.exec(filename);
+  if (plain) {
+    return { title: plain[2], trackNo: parseInt(plain[1], 10) };
+  }
+  return { title: filename, trackNo: null };
+}
+
+function buildTrackFromPath(absPath) {
+  const relPath = path.relative(MUSIC_PATH, absPath);
+  const parts = relPath.split(path.sep);
+  const filename = path.basename(absPath, path.extname(absPath));
+  const parsed = parseTitleFromFilename(filename);
+
+  const artist = parts[0] || "Unknown Artist";
+  const album = parts.length >= 3 ? parts[parts.length - 2] : "Unknown Album";
+
+  return {
+    id: makeId(relPath),
+    relPath,
+    title: parsed.title,
+    artist,
+    album,
+    duration: 0,
+    genre: null,
+    year: null,
+    trackNo: parsed.trackNo,
+  };
+}
+
+function sortLibrary(arr) {
+  arr.sort((a, b) => {
+    const c = (a.artist || "").localeCompare(b.artist || "", undefined, { sensitivity: "base" });
+    if (c !== 0) return c;
+    const d = (a.album || "").localeCompare(b.album || "", undefined, { sensitivity: "base" });
+    if (d !== 0) return d;
+    const t = (a.trackNo || 0) - (b.trackNo || 0);
+    if (t !== 0) return t;
+    return (a.title || "").localeCompare(b.title || "", undefined, { sensitivity: "base" });
+  });
+}
+
 async function buildIndex() {
   if (scanState.scanning) return;
   scanState = { scanning: true, scanned: 0, total: null };
@@ -79,24 +134,39 @@ async function buildIndex() {
   scanState.total = fileList.length;
   console.log(`[scan] found ${fileList.length} audio files`);
 
-  // Cold start (empty library / first scan): populate the LIVE index incrementally so a very
-  // large library (this one is ~289k tracks) becomes browsable and playable as it scans,
-  // instead of after a multi-hour wait. Rescan (library already populated): build into a
-  // local buffer and swap atomically at the end so the live index is never disrupted.
+  // Phase 1 — path-only index (no ID3 parsing)
   const cold = library.length === 0;
-  const buffer = cold ? library : [];
-  if (cold) {
-    buffer.length = 0;
-    idMap = new Map();
+  const buffer = fileList.map((absPath) => buildTrackFromPath(absPath));
+  const liveMap = new Map();
+  for (const t of buffer) {
+    liveMap.set(t.id, path.join(MUSIC_PATH, t.relPath));
   }
-  const liveMap = cold ? idMap : new Map();
 
+  sortLibrary(buffer);
+
+  if (cold) {
+    library = buffer;
+    idMap = liveMap;
+    console.log(`[scan] phase-1 live — ${library.length} tracks ready`);
+  }
+
+  // Phase 2 — background ID3 enrichment
   const limit = pLimit(8);
   let lastLogged = 0;
+
+  // Build id → track map for in-place updates
+  const trackById = new Map();
+  for (const t of buffer) {
+    trackById.set(t.id, t);
+  }
 
   const tasks = fileList.map((absPath) =>
     limit(async () => {
       const relPath = path.relative(MUSIC_PATH, absPath);
+      const id = makeId(relPath);
+      const track = trackById.get(id);
+      if (!track) return;
+
       let meta;
       try {
         meta = await mm.parseFile(absPath, { duration: true, skipCovers: true });
@@ -106,25 +176,13 @@ async function buildIndex() {
 
       const common = meta && meta.common ? meta.common : {};
       const format = meta && meta.format ? meta.format : {};
-      const filename = path.basename(absPath, path.extname(absPath));
 
-      const parts = relPath.split(path.sep);
-      const artistFallback = parts[0] || "Unknown Artist";
+      if (common.title) track.title = common.title;
+      track.duration = formatDuration(format.duration);
+      if (common.genre && common.genre.length) track.genre = common.genre[0];
+      if (common.year) track.year = common.year;
+      if (common.track && common.track.no != null) track.trackNo = common.track.no;
 
-      const track = {
-        id: makeId(relPath),
-        relPath,
-        title: common.title || filename,
-        artist: common.artist || artistFallback,
-        album: common.album || "Unknown Album",
-        duration: formatDuration(format.duration),
-        genre: common.genre ? common.genre[0] : null,
-        year: common.year || null,
-        trackNo: common.track && common.track.no ? common.track.no : null,
-      };
-
-      buffer.push(track);
-      liveMap.set(track.id, path.join(MUSIC_PATH, track.relPath));
       scanState.scanned += 1;
 
       if (scanState.scanned - lastLogged >= 500) {
@@ -136,16 +194,7 @@ async function buildIndex() {
 
   await Promise.all(tasks);
 
-  // Sort by artist, album, trackNo, title for stable ordering
-  buffer.sort((a, b) => {
-    const c = (a.artist || "").localeCompare(b.artist || "", undefined, { sensitivity: "base" });
-    if (c !== 0) return c;
-    const d = (a.album || "").localeCompare(b.album || "", undefined, { sensitivity: "base" });
-    if (d !== 0) return d;
-    const t = (a.trackNo || 0) - (b.trackNo || 0);
-    if (t !== 0) return t;
-    return (a.title || "").localeCompare(b.title || "", undefined, { sensitivity: "base" });
-  });
+  sortLibrary(buffer);
 
   library = buffer;
   idMap = liveMap;
@@ -220,53 +269,102 @@ app.get("/stream/:id", (req, res) => {
     return res.status(404).json({ error: "Track file missing" });
   }
 
-  const ext = path.extname(absPath).toLowerCase();
-  const contentType = MIME_TYPES[ext] || "application/octet-stream";
-  const size = stats.size;
+  const q = req.query.q;
+  const quality = typeof q === "string" ? q.toLowerCase() : "";
 
-  const range = req.headers.range;
-  if (range) {
-    const match = range.match(/bytes=(\d+)-(\d*)/);
-    if (!match) {
+  if (!quality || quality === "original" || !QUALITY_BITRATES[quality]) {
+    // Original quality — raw-file passthrough with Range support
+    const ext = path.extname(absPath).toLowerCase();
+    const contentType = MIME_TYPES[ext] || "application/octet-stream";
+    const size = stats.size;
+
+    const range = req.headers.range;
+    if (range) {
+      const match = range.match(/bytes=(\d+)-(\d*)/);
+      if (!match) {
+        res.set("Content-Length", String(size));
+        res.set("Accept-Ranges", "bytes");
+        res.set("Content-Type", contentType);
+        return res.status(200).end();
+      }
+      const start = parseInt(match[1], 10);
+      const end = match[2] ? parseInt(match[2], 10) : size - 1;
+      if (start >= size || end >= size || start > end) {
+        res.set("Content-Range", `bytes */${size}`);
+        return res.status(416).end();
+      }
+      const chunkSize = end - start + 1;
+      res.set("Content-Range", `bytes ${start}-${end}/${size}`);
+      res.set("Accept-Ranges", "bytes");
+      res.set("Content-Length", String(chunkSize));
+      res.set("Content-Type", contentType);
+      res.status(206);
+      const stream = fs.createReadStream(absPath, { start, end });
+      stream.on("error", (err) => {
+        if (!res.headersSent) {
+          return res.status(500).end();
+        }
+        res.destroy();
+      });
+      stream.pipe(res);
+    } else {
       res.set("Content-Length", String(size));
       res.set("Accept-Ranges", "bytes");
       res.set("Content-Type", contentType);
-      return res.status(200).end();
+      res.status(200);
+      const stream = fs.createReadStream(absPath);
+      stream.on("error", (err) => {
+        if (!res.headersSent) {
+          return res.status(500).end();
+        }
+        res.destroy();
+      });
+      stream.pipe(res);
     }
-    const start = parseInt(match[1], 10);
-    const end = match[2] ? parseInt(match[2], 10) : size - 1;
-    if (start >= size || end >= size || start > end) {
-      res.set("Content-Range", `bytes */${size}`);
-      return res.status(416).end();
-    }
-    const chunkSize = end - start + 1;
-    res.set("Content-Range", `bytes ${start}-${end}/${size}`);
-    res.set("Accept-Ranges", "bytes");
-    res.set("Content-Length", String(chunkSize));
-    res.set("Content-Type", contentType);
-    res.status(206);
-    const stream = fs.createReadStream(absPath, { start, end });
-    stream.on("error", (err) => {
-      if (!res.headersSent) {
-        return res.status(500).end();
-      }
-      res.destroy();
-    });
-    stream.pipe(res);
-  } else {
-    res.set("Content-Length", String(size));
-    res.set("Accept-Ranges", "bytes");
-    res.set("Content-Type", contentType);
-    res.status(200);
-    const stream = fs.createReadStream(absPath);
-    stream.on("error", (err) => {
-      if (!res.headersSent) {
-        return res.status(500).end();
-      }
-      res.destroy();
-    });
-    stream.pipe(res);
+    return;
   }
+
+  // Transcoded quality
+  const bitrate = QUALITY_BITRATES[quality];
+  const tRaw = parseFloat(req.query.t);
+  const t = isFinite(tRaw) && tRaw >= 0 ? tRaw : 0;
+
+  const args = ["-hide_banner", "-loglevel", "error"];
+  if (t > 0) {
+    args.push("-ss", String(t));
+  }
+  args.push("-i", absPath, "-vn", "-c:a", "libmp3lame", "-b:a", bitrate, "-f", "mp3", "pipe:1");
+
+  const child = spawn(FFMPEG_PATH, args);
+
+  req.on("close", () => {
+    child.kill("SIGKILL");
+  });
+
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+
+  child.on("error", (err) => {
+    console.error("[ffmpeg] spawn error:", err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Transcode failed" });
+    } else {
+      res.destroy();
+    }
+  });
+
+  child.on("exit", (code) => {
+    if (code !== 0 && code !== null) {
+      console.error("[ffmpeg] exited", code, stderr.trim());
+    }
+  });
+
+  res.set("Content-Type", "audio/mpeg");
+  res.set("Accept-Ranges", "none");
+  res.status(200);
+  child.stdout.pipe(res);
 });
 
 app.get("/art/:id", async (req, res) => {
