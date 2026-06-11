@@ -34,6 +34,48 @@
     margin-bottom: 12px;
     color: #fff;
   }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .brand-logo {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex: 0 0 auto;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  }
+  .brand h1 { margin-bottom: 0; }
+  .hero {
+    height: 200px;
+    border-radius: 10px;
+    margin-bottom: 24px;
+    flex: 0 0 auto;
+    background-image: linear-gradient(180deg, rgba(18,18,18,0.10) 0%, rgba(18,18,18,0.45) 55%, #121212 100%), url("header.jpg");
+    background-size: cover;
+    background-position: center 38%;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 18px 24px;
+  }
+  .hero h2 {
+    margin: 0;
+    font-size: 32px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    color: #fff;
+    text-shadow: 0 2px 14px rgba(0, 0, 0, 0.7);
+  }
+  .hero-tag {
+    margin: 4px 0 0;
+    font-size: 14px;
+    color: #e0e0e0;
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.7);
+  }
   .search-box {
     background: #242424;
     border: none;
@@ -186,11 +228,18 @@
 <button class="mobile-toggle" id="mobileToggle" aria-label="Menu">&#9776;</button>
 <div id="app">
   <aside class="sidebar" id="sidebar">
-    <h1>Shmearify</h1>
+    <div class="brand">
+      <img class="brand-logo" src="profile.jpg" alt="Shmearify logo">
+      <h1>Shmearify</h1>
+    </div>
     <input class="search-box" id="searchBox" placeholder="Search…" autocomplete="off">
     <ul class="artist-list" id="artistList"></ul>
   </aside>
   <main class="main" id="main">
+    <div class="hero">
+      <h2>Shmearify</h2>
+      <p class="hero-tag">Your whole library, anywhere.</p>
+    </div>
     <div class="center-panel" id="centerPanel">
       <div style="font-size:14px;">Loading…</div>
     </div>
