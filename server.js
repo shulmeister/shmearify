@@ -9,7 +9,7 @@ const { spawn } = require("child_process");
 
 const MUSIC_PATH = process.env.MUSIC_PATH || "/Volumes/Shulmeister HD/iTunes/Music";
 const PORT = process.env.PORT || 3005;
-const CACHE_PATH = path.join(__dirname, "library-cache.json");
+const CACHE_PATH = process.env.CACHE_PATH || path.join(__dirname, "library-cache.json");
 const FFMPEG_PATH = process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg";
 const AUDIO_EXTS = new Set([".mp3", ".m4a", ".flac", ".aac", ".wav", ".ogg"]);
 const MIME_TYPES = {
