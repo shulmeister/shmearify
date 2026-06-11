@@ -345,7 +345,7 @@
   const state = {
     artists: [],          // [{ name, count }] — lightweight, from /api/artists
     tracks: [],           // currently displayed tracks (one artist, or search hits)
-    searchTotal: 0,       // total search matches (may exceed tracks.length, which is capped)
+    viewTotal: 0,         // true total for the current view (may exceed tracks.length, which is capped)
     selectedArtist: null,
     search: "",
     queue: [],
@@ -447,14 +447,19 @@
   async function loadArtistTracks(name, silent) {
     state.selectedArtist = name;
     if (!silent) {
+      // Picking a band focuses the view on it — clear the filter box and reset the nav.
       state.search = "";
       els.searchBox.value = "";
     }
     try {
-      state.tracks = await fetchJson("api/tracks?artist=" + encodeURIComponent(name));
+      const data = await fetchJson("api/tracks?artist=" + encodeURIComponent(name));
+      state.tracks = data.tracks || [];
+      state.viewTotal = data.total || state.tracks.length;
     } catch (e) {
       state.tracks = [];
+      state.viewTotal = 0;
     }
+    if (!silent) renderArtists();
     renderTracks();
   }
 
@@ -465,7 +470,7 @@
     const trimmed = q.trim();
     if (!trimmed) {
       state.tracks = [];
-      state.searchTotal = 0;
+      state.viewTotal = 0;
       renderTracks();
       return;
     }
@@ -474,11 +479,11 @@
       const data = await fetchJson("api/search?q=" + encodeURIComponent(trimmed));
       if (seq !== searchSeq) return; // a newer search superseded this one
       state.tracks = data.tracks;
-      state.searchTotal = data.total;
+      state.viewTotal = data.total;
     } catch (e) {
       if (seq !== searchSeq) return;
       state.tracks = [];
-      state.searchTotal = 0;
+      state.viewTotal = 0;
     }
     renderTracks();
   }
@@ -509,33 +514,72 @@
     }
   }
 
-  function renderArtists() {
-    const frag = document.createDocumentFragment();
-    const home = document.createElement("li");
-    home.textContent = "Home";
-    if (!state.selectedArtist && !state.search.trim()) home.classList.add("active");
-    home.addEventListener("click", () => {
-      state.selectedArtist = null;
-      state.search = "";
-      els.searchBox.value = "";
-      state.tracks = [];
-      setActiveArtist(home);
-      renderTracks();
-      closeSidebarOnMobile();
-    });
-    frag.appendChild(home);
+  // The sidebar box filters the band list live. Typing "gra" surfaces "Grateful Dead" right in the
+  // nav — bands whose name STARTS with the query come first, then bands that merely contain it.
+  // This is the fast path on mobile: a couple letters, tap the band. Filtering is local over the
+  // ~4k artist names, so it's instant.
+  const ARTIST_RENDER_CAP = 500;
+  function filterArtists(q) {
+    if (!q) return state.artists;
+    const starts = [];
+    const contains = [];
     for (const a of state.artists) {
+      const n = a.name.toLowerCase();
+      if (n.startsWith(q)) starts.push(a);
+      else if (n.includes(q)) contains.push(a);
+    }
+    return starts.concat(contains);
+  }
+
+  function renderArtists() {
+    const q = els.searchBox.value.trim().toLowerCase();
+    const list = filterArtists(q);
+    const frag = document.createDocumentFragment();
+
+    if (!q) {
+      const home = document.createElement("li");
+      home.textContent = "Home";
+      if (!state.selectedArtist) home.classList.add("active");
+      home.addEventListener("click", () => {
+        state.selectedArtist = null;
+        state.search = "";
+        els.searchBox.value = "";
+        state.tracks = [];
+        renderArtists();
+        renderTracks();
+        closeSidebarOnMobile();
+      });
+      frag.appendChild(home);
+    }
+
+    const shown = list.slice(0, ARTIST_RENDER_CAP);
+    for (const a of shown) {
       const li = document.createElement("li");
       li.textContent = a.name;
       li.title = a.name + " · " + a.count + (a.count === 1 ? " track" : " tracks");
       if (state.selectedArtist === a.name) li.classList.add("active");
       li.addEventListener("click", () => {
-        setActiveArtist(li);
         loadArtistTracks(a.name);
         closeSidebarOnMobile();
       });
       frag.appendChild(li);
     }
+
+    if (list.length > shown.length) {
+      const more = document.createElement("li");
+      more.style.color = "#6a6a6a";
+      more.style.cursor = "default";
+      more.textContent = "+" + formatNumber(list.length - shown.length) +
+        " more — keep typing to narrow";
+      frag.appendChild(more);
+    } else if (!q && state.artists.length === 0) {
+      const empty = document.createElement("li");
+      empty.style.color = "#6a6a6a";
+      empty.style.cursor = "default";
+      empty.textContent = "Loading artists…";
+      frag.appendChild(empty);
+    }
+
     els.artistList.innerHTML = "";
     els.artistList.appendChild(frag);
   }
@@ -602,9 +646,9 @@
       table.appendChild(tbody);
       frag.appendChild(table);
 
-      // For search, the server caps results at 500 but reports the true total; for an artist the
-      // list is whole. Only show the "showing first N" note when there's genuinely more.
-      const total = isSearch ? state.searchTotal : tracks.length;
+      // The server caps both search (500) and per-artist (1000) responses but reports the true
+      // total. Only show the "showing first N" note when there's genuinely more than displayed.
+      const total = state.viewTotal || tracks.length;
       if (total > toShow.length) {
         const note = document.createElement("div");
         note.style.color = "#b3b3b3";
@@ -787,9 +831,10 @@
 
   let debounceTimer;
   els.searchBox.addEventListener("input", () => {
+    renderArtists(); // instant: filter the band list in the left nav (prefix-first)
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
-      runSearch(els.searchBox.value);
+      runSearch(els.searchBox.value); // server-side track search → main panel
     }, 250);
   });
 

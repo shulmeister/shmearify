@@ -251,7 +251,18 @@ function loadCache() {
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+// Never cache the HTML shell — it carries the client code, and a stale copy means deploys silently
+// don't reach the browser (Cloudflare otherwise stamps max-age, and mobile browsers cache hard).
+// Static assets (images) still cache normally.
+app.use(
+  express.static(path.join(__dirname, "public"), {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith(".html")) {
+        res.setHeader("Cache-Control", "no-store, must-revalidate");
+      }
+    },
+  })
+);
 
 app.get("/api/status", (req, res) => {
   res.json({
@@ -283,11 +294,13 @@ app.get("/api/artists", (req, res) => {
   res.json(arr);
 });
 
-// Tracks for a single artist — lazy-loaded when the user picks an artist.
+// Tracks for a single artist — lazy-loaded when the user picks an artist. Capped so a mega-artist
+// (e.g. Grateful Dead, ~45k tracks) doesn't ship a 12 MB payload to a phone; total is reported.
 app.get("/api/tracks", (req, res) => {
   const artist = typeof req.query.artist === "string" ? req.query.artist : "";
-  if (!artist) return res.json([]);
-  res.json(library.filter((t) => t.artist === artist));
+  if (!artist) return res.json({ tracks: [], total: 0 });
+  const all = library.filter((t) => t.artist === artist);
+  res.json({ tracks: all.slice(0, 1000), total: all.length });
 });
 
 // Server-side search across title/artist/album. Returns up to `max` hits plus a total count so
