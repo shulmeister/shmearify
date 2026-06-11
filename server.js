@@ -11,6 +11,10 @@ const MUSIC_PATH = process.env.MUSIC_PATH || "/Volumes/Shulmeister HD/iTunes/Mus
 const PORT = process.env.PORT || 3005;
 const CACHE_PATH = process.env.CACHE_PATH || path.join(__dirname, "library-cache.json");
 const FFMPEG_PATH = process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg";
+// Cap concurrent ffmpeg transcodes — this is a PUBLIC URL on a host that also runs CCA production
+// services, so unbounded spawns could exhaust CPU/memory. Over the cap we fall back to original
+// passthrough (no ffmpeg) rather than failing playback. Env-tunable.
+const MAX_TRANSCODES = parseInt(process.env.MAX_TRANSCODES || "3", 10) || 3;
 const AUDIO_EXTS = new Set([".mp3", ".m4a", ".flac", ".aac", ".wav", ".ogg"]);
 const MIME_TYPES = {
   ".mp3": "audio/mpeg",
@@ -36,6 +40,8 @@ const ART_CACHE_MAX = 300;
 // read from the same external USB drive — concurrent metadata reads starve the audio read and
 // cause stutter on mobile). Metadata is non-urgent, so smooth streaming wins.
 let activeStreams = 0;
+// Count of in-flight ffmpeg transcodes (subset of streams) — bounded by MAX_TRANSCODES.
+let activeTranscodes = 0;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -410,6 +416,54 @@ app.get("/api/search", (req, res) => {
   res.json({ tracks: out, total });
 });
 
+// Raw-file passthrough with HTTP Range support (206). No ffmpeg. Used for "original" quality and as
+// the graceful fallback when the transcode cap is hit.
+function serveOriginal(req, res, absPath, stats) {
+  const ext = path.extname(absPath).toLowerCase();
+  const contentType = MIME_TYPES[ext] || "application/octet-stream";
+  const size = stats.size;
+
+  const range = req.headers.range;
+  if (range) {
+    const match = range.match(/bytes=(\d+)-(\d*)/);
+    if (!match) {
+      res.set("Content-Length", String(size));
+      res.set("Accept-Ranges", "bytes");
+      res.set("Content-Type", contentType);
+      return res.status(200).end();
+    }
+    const start = parseInt(match[1], 10);
+    const end = match[2] ? parseInt(match[2], 10) : size - 1;
+    if (start >= size || end >= size || start > end) {
+      res.set("Content-Range", `bytes */${size}`);
+      return res.status(416).end();
+    }
+    const chunkSize = end - start + 1;
+    res.set("Content-Range", `bytes ${start}-${end}/${size}`);
+    res.set("Accept-Ranges", "bytes");
+    res.set("Content-Length", String(chunkSize));
+    res.set("Content-Type", contentType);
+    res.status(206);
+    const stream = fs.createReadStream(absPath, { start, end });
+    stream.on("error", () => {
+      if (!res.headersSent) return res.status(500).end();
+      res.destroy();
+    });
+    stream.pipe(res);
+  } else {
+    res.set("Content-Length", String(size));
+    res.set("Accept-Ranges", "bytes");
+    res.set("Content-Type", contentType);
+    res.status(200);
+    const stream = fs.createReadStream(absPath);
+    stream.on("error", () => {
+      if (!res.headersSent) return res.status(500).end();
+      res.destroy();
+    });
+    stream.pipe(res);
+  }
+}
+
 app.get("/stream/:id", (req, res) => {
   if (!isMounted()) {
     return res.status(503).json({ error: "Music drive not mounted" });
@@ -440,60 +494,20 @@ app.get("/stream/:id", (req, res) => {
 
   const q = req.query.q;
   const quality = typeof q === "string" ? q.toLowerCase() : "";
+  const wantsTranscode = quality && quality !== "original" && QUALITY_BITRATES[quality];
 
-  if (!quality || quality === "original" || !QUALITY_BITRATES[quality]) {
-    // Original quality — raw-file passthrough with Range support
-    const ext = path.extname(absPath).toLowerCase();
-    const contentType = MIME_TYPES[ext] || "application/octet-stream";
-    const size = stats.size;
-
-    const range = req.headers.range;
-    if (range) {
-      const match = range.match(/bytes=(\d+)-(\d*)/);
-      if (!match) {
-        res.set("Content-Length", String(size));
-        res.set("Accept-Ranges", "bytes");
-        res.set("Content-Type", contentType);
-        return res.status(200).end();
-      }
-      const start = parseInt(match[1], 10);
-      const end = match[2] ? parseInt(match[2], 10) : size - 1;
-      if (start >= size || end >= size || start > end) {
-        res.set("Content-Range", `bytes */${size}`);
-        return res.status(416).end();
-      }
-      const chunkSize = end - start + 1;
-      res.set("Content-Range", `bytes ${start}-${end}/${size}`);
-      res.set("Accept-Ranges", "bytes");
-      res.set("Content-Length", String(chunkSize));
-      res.set("Content-Type", contentType);
-      res.status(206);
-      const stream = fs.createReadStream(absPath, { start, end });
-      stream.on("error", (err) => {
-        if (!res.headersSent) {
-          return res.status(500).end();
-        }
-        res.destroy();
-      });
-      stream.pipe(res);
-    } else {
-      res.set("Content-Length", String(size));
-      res.set("Accept-Ranges", "bytes");
-      res.set("Content-Type", contentType);
-      res.status(200);
-      const stream = fs.createReadStream(absPath);
-      stream.on("error", (err) => {
-        if (!res.headersSent) {
-          return res.status(500).end();
-        }
-        res.destroy();
-      });
-      stream.pipe(res);
-    }
-    return;
+  if (!wantsTranscode) {
+    return serveOriginal(req, res, absPath, stats);
   }
 
-  // Transcoded quality
+  // Transcode requested — enforce the concurrency cap. Over the cap, degrade to original passthrough
+  // (still plays, just heavier) rather than failing the stream or piling up ffmpeg processes.
+  if (activeTranscodes >= MAX_TRANSCODES) {
+    console.warn(`[ffmpeg] transcode cap (${MAX_TRANSCODES}) reached — serving original for ${req.params.id}`);
+    res.set("X-Shmearify-Transcode", "fallback-original");
+    return serveOriginal(req, res, absPath, stats);
+  }
+
   const bitrate = QUALITY_BITRATES[quality];
   const tRaw = parseFloat(req.query.t);
   const t = isFinite(tRaw) && tRaw >= 0 ? tRaw : 0;
@@ -503,6 +517,15 @@ app.get("/stream/:id", (req, res) => {
     args.push("-ss", String(t));
   }
   args.push("-i", absPath, "-vn", "-c:a", "libmp3lame", "-b:a", bitrate, "-f", "mp3", "pipe:1");
+
+  activeTranscodes += 1;
+  let transcodeCounted = true;
+  const releaseTranscode = () => {
+    if (transcodeCounted) {
+      transcodeCounted = false;
+      activeTranscodes = Math.max(0, activeTranscodes - 1);
+    }
+  };
 
   const child = spawn(FFMPEG_PATH, args);
 
@@ -516,6 +539,7 @@ app.get("/stream/:id", (req, res) => {
   });
 
   child.on("error", (err) => {
+    releaseTranscode();
     console.error("[ffmpeg] spawn error:", err.message);
     if (!res.headersSent) {
       res.status(500).json({ error: "Transcode failed" });
@@ -525,6 +549,7 @@ app.get("/stream/:id", (req, res) => {
   });
 
   child.on("exit", (code) => {
+    releaseTranscode();
     if (code !== 0 && code !== null) {
       console.error("[ffmpeg] exited", code, stderr.trim());
     }
