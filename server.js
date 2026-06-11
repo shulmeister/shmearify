@@ -115,6 +115,7 @@ function buildTrackFromPath(absPath) {
     genre: null,
     year: null,
     trackNo: parsed.trackNo,
+    enriched: false, // set true once ID3 has been attempted — drives resumable enrichment
   };
 }
 
@@ -130,12 +131,102 @@ function sortLibrary(arr) {
   });
 }
 
+// Persist the library to disk (internal SSD, not the music drive — no contention with streaming).
+// Written periodically during enrichment so a restart resumes instead of re-scanning from zero.
+const CHECKPOINT_EVERY = parseInt(process.env.CHECKPOINT_EVERY || "20000", 10) || 20000;
+let checkpointing = false;
+async function saveCache() {
+  if (checkpointing) return;
+  checkpointing = true;
+  try {
+    const tmp = CACHE_PATH + ".tmp";
+    await fs.promises.writeFile(tmp, JSON.stringify(library));
+    await fs.promises.rename(tmp, CACHE_PATH);
+  } catch (err) {
+    console.error("[cache] write failed:", err.message);
+  } finally {
+    checkpointing = false;
+  }
+}
+
+// Enrich only the given tracks (those with enriched === false), in place. Concurrency 4; each
+// worker pauses entirely while audio is streaming (disk is shared with the music drive). Marks each
+// track enriched after the attempt (success OR failure) so a corrupt file isn't retried forever,
+// and checkpoints the cache every CHECKPOINT_EVERY tracks so progress survives restarts.
+async function enrichTracks(targets) {
+  if (!targets.length) {
+    scanState = { scanning: false, scanned: 0, total: 0 };
+    return;
+  }
+  scanState = { scanning: true, scanned: 0, total: targets.length };
+  const limit = pLimit(4);
+  let lastLogged = 0;
+  let sinceCheckpoint = 0;
+
+  const tasks = targets.map((track) =>
+    limit(async () => {
+      // Yield the disk to active playback — pause enrichment while anything is streaming.
+      while (activeStreams > 0) {
+        await sleep(400);
+      }
+
+      const absPath = idMap.get(track.id);
+      if (absPath) {
+        let meta;
+        try {
+          meta = await mm.parseFile(absPath, { duration: true, skipCovers: true });
+        } catch (err) {
+          meta = null;
+        }
+        const common = meta && meta.common ? meta.common : {};
+        const format = meta && meta.format ? meta.format : {};
+
+        // Folder-derived artist/album are authoritative (they de-dupe inconsistent tags). Fall back
+        // to ID3 ONLY where the folder lacked the info: loose root / "Compilations" → ID3 artist;
+        // 2-segment Artist/file (no album folder) → ID3 album. Never override a real folder value.
+        const parts = track.relPath.split(path.sep);
+        const artistFromFolder = parts.length >= 2 && parts[0].toLowerCase() !== "compilations";
+        if (!artistFromFolder && common.artist) track.artist = common.artist;
+        if (parts.length < 3 && common.album) track.album = common.album;
+
+        if (common.title) track.title = common.title;
+        track.duration = formatDuration(format.duration);
+        if (common.genre && common.genre.length) track.genre = common.genre[0];
+        if (common.year) track.year = common.year;
+        if (common.track && common.track.no != null) track.trackNo = common.track.no;
+      }
+      track.enriched = true;
+
+      scanState.scanned += 1;
+      sinceCheckpoint += 1;
+      if (scanState.scanned - lastLogged >= 500) {
+        lastLogged = scanState.scanned;
+        console.log(`[scan] enriched ${scanState.scanned} / ${scanState.total}`);
+      }
+      if (sinceCheckpoint >= CHECKPOINT_EVERY) {
+        sinceCheckpoint = 0;
+        await saveCache();
+        console.log(`[scan] checkpoint saved at ${scanState.scanned}`);
+      }
+    })
+  );
+
+  await Promise.all(tasks);
+  sortLibrary(library); // enrichment can shift the rare edge-case artist/album; keep order stable
+  await saveCache();
+  scanState = { scanning: false, scanned: scanState.scanned, total: scanState.total };
+  console.log(`[scan] enrichment complete — ${scanState.scanned} tracks`);
+}
+
+// Full scan: walk the disk, reconcile against whatever is already in memory (reuse enrichment for
+// ids we already have; add new files; drop missing), then enrich only the un-enriched. Used on cold
+// start (no cache) and on /api/rescan (to pick up added/removed files).
 async function buildIndex() {
   if (scanState.scanning) return;
   scanState = { scanning: true, scanned: 0, total: null };
 
   const startTime = Date.now();
-  console.log("[scan] starting library scan…");
+  console.log("[scan] starting full library scan…");
 
   let fileList;
   try {
@@ -145,100 +236,44 @@ async function buildIndex() {
     scanState = { scanning: false, scanned: 0, total: null };
     return;
   }
-
-  scanState.total = fileList.length;
   console.log(`[scan] found ${fileList.length} audio files`);
 
-  // Phase 1 — path-only index (no ID3 parsing)
-  const cold = library.length === 0;
-  const buffer = fileList.map((absPath) => buildTrackFromPath(absPath));
+  // Reconcile with existing tracks so prior enrichment is preserved across restarts/rescans.
+  const prevById = new Map();
+  for (const t of library) prevById.set(t.id, t);
+
+  const buffer = [];
   const liveMap = new Map();
-  for (const t of buffer) {
-    liveMap.set(t.id, path.join(MUSIC_PATH, t.relPath));
+  for (const absPath of fileList) {
+    const relPath = path.relative(MUSIC_PATH, absPath);
+    const id = makeId(relPath);
+    liveMap.set(id, path.join(MUSIC_PATH, relPath));
+    const prev = prevById.get(id);
+    buffer.push(prev || buildTrackFromPath(absPath));
   }
-
-  sortLibrary(buffer);
-
-  if (cold) {
-    library = buffer;
-    idMap = liveMap;
-    console.log(`[scan] phase-1 live — ${library.length} tracks ready`);
-  }
-
-  // Phase 2 — background ID3 enrichment. Low concurrency (4) to leave the external drive headroom
-  // for streaming; each worker fully pauses while any audio stream is active (see activeStreams).
-  const limit = pLimit(4);
-  let lastLogged = 0;
-
-  // Build id → track map for in-place updates
-  const trackById = new Map();
-  for (const t of buffer) {
-    trackById.set(t.id, t);
-  }
-
-  const tasks = fileList.map((absPath) =>
-    limit(async () => {
-      const relPath = path.relative(MUSIC_PATH, absPath);
-      const id = makeId(relPath);
-      const track = trackById.get(id);
-      if (!track) return;
-
-      // Yield the disk to active playback — pause enrichment entirely while anything is streaming.
-      while (activeStreams > 0) {
-        await sleep(400);
-      }
-
-      let meta;
-      try {
-        meta = await mm.parseFile(absPath, { duration: true, skipCovers: true });
-      } catch (err) {
-        meta = null;
-      }
-
-      const common = meta && meta.common ? meta.common : {};
-      const format = meta && meta.format ? meta.format : {};
-
-      // Folder-derived artist/album are authoritative (they de-dupe inconsistent tags). Fall back
-      // to ID3 ONLY in the edge cases where the folder lacked the info: loose root files or a
-      // "Compilations" top folder (no real artist folder) → ID3 artist; 2-segment Artist/file
-      // paths (no album folder) → ID3 album. Never override a real folder artist/album.
-      const parts = relPath.split(path.sep);
-      const artistFromFolder = parts.length >= 2 && parts[0].toLowerCase() !== "compilations";
-      if (!artistFromFolder && common.artist) track.artist = common.artist;
-      if (parts.length < 3 && common.album) track.album = common.album;
-
-      if (common.title) track.title = common.title;
-      track.duration = formatDuration(format.duration);
-      if (common.genre && common.genre.length) track.genre = common.genre[0];
-      if (common.year) track.year = common.year;
-      if (common.track && common.track.no != null) track.trackNo = common.track.no;
-
-      scanState.scanned += 1;
-
-      if (scanState.scanned - lastLogged >= 500) {
-        lastLogged = scanState.scanned;
-        console.log(`[scan] parsed ${scanState.scanned} / ${scanState.total}`);
-      }
-    })
-  );
-
-  await Promise.all(tasks);
-
   sortLibrary(buffer);
 
   library = buffer;
   idMap = liveMap;
+  console.log(`[scan] phase-1 live — ${library.length} tracks ready`);
 
-  try {
-    const tmp = CACHE_PATH + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(library));
-    fs.renameSync(tmp, CACHE_PATH);
-  } catch (err) {
-    console.error("[scan] cache write failed:", err.message);
+  const targets = buffer.filter((t) => !t.enriched);
+  console.log(`[scan] ${targets.length} of ${buffer.length} tracks need enrichment`);
+  await enrichTracks(targets);
+  console.log(`[scan] full scan done in ${(Date.now() - startTime) / 1000}s`);
+}
+
+// Warm start: cache is already loaded and serving. Finish any enrichment the cache still lacks,
+// WITHOUT walking the disk. Once the cache is fully enriched this does nothing — zero contention.
+async function resumeEnrichment() {
+  if (scanState.scanning) return;
+  const targets = library.filter((t) => !t.enriched);
+  if (!targets.length) {
+    console.log(`[scan] cache fully enriched (${library.length} tracks) — no scan needed`);
+    return;
   }
-
-  scanState = { scanning: false, scanned: scanState.scanned, total: scanState.total };
-  console.log(`[scan] complete — ${library.length} tracks in ${(Date.now() - startTime) / 1000}s`);
+  console.log(`[scan] resuming enrichment — ${targets.length} of ${library.length} tracks remain`);
+  await enrichTracks(targets);
 }
 
 function loadCache() {
@@ -248,6 +283,14 @@ function loadCache() {
     const tracks = JSON.parse(data);
     if (!Array.isArray(tracks)) return false;
 
+    // Migrate caches written before the `enriched` flag existed: a real duration means it was
+    // parsed. Tracks still at duration 0 are treated as un-enriched and get finished on resume.
+    for (const t of tracks) {
+      if (typeof t.enriched !== "boolean") {
+        t.enriched = typeof t.duration === "number" && t.duration > 0;
+      }
+    }
+
     library = tracks;
     const newMap = new Map();
     for (const t of tracks) {
@@ -255,7 +298,8 @@ function loadCache() {
     }
     idMap = newMap;
 
-    console.log(`[cache] loaded ${tracks.length} tracks from ${CACHE_PATH}`);
+    const pending = tracks.filter((t) => !t.enriched).length;
+    console.log(`[cache] loaded ${tracks.length} tracks (${pending} still need enrichment)`);
     return true;
   } catch (err) {
     console.error("[cache] load failed:", err.message);
@@ -564,7 +608,13 @@ process.on("uncaughtException", (err) => {
 app.listen(PORT, "127.0.0.1", () => {
   console.log(`Shmearify listening on http://127.0.0.1:${PORT}`);
   const hadCache = loadCache();
-  if (!hadCache && isMounted()) {
-    buildIndex().catch((err) => console.error("[startup scan] error:", err.message));
+  if (isMounted()) {
+    if (hadCache) {
+      // Warm start — serve from cache instantly, finish any remaining enrichment (no disk walk).
+      resumeEnrichment().catch((err) => console.error("[resume] error:", err.message));
+    } else {
+      // Cold start — no cache, do the full walk + enrich (checkpointed so it survives restarts).
+      buildIndex().catch((err) => console.error("[startup scan] error:", err.message));
+    }
   }
 });
