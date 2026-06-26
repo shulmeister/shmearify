@@ -30,6 +30,28 @@ const QUALITY_BITRATES = {
   low: "96k",
 };
 
+// Grateful Dead show dedup. The master drive holds the same shows in up to three places —
+// Music/Grateful Dead plus separate taper "vault" folders (e.g. "Paolo's Grateful Dead",
+// "Tom's Grateful Dead"). We merge them all under one "Grateful Dead" artist and keep ONE copy per
+// show DATE — the show folder with the newest mtime (the freshest transfer) — so the app shows each
+// show once instead of 3-4 times. Non-destructive: nothing is deleted, this is index-only.
+const GD_ARTIST = "Grateful Dead";
+function gdVaultRoots() {
+  if (process.env.GD_VAULT_ROOTS) {
+    return process.env.GD_VAULT_ROOTS.split(":").filter(Boolean);
+  }
+  const parent = path.dirname(MUSIC_PATH);
+  return ["Paolo's Grateful Dead", "Tom's Grateful Dead"]
+    .map((n) => path.join(parent, n))
+    .filter((p) => {
+      try {
+        return fs.statSync(p).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+}
+
 let library = [];
 let idMap = new Map();
 let scanState = { scanning: false, scanned: 0, total: null };
@@ -96,20 +118,33 @@ function parseTitleFromFilename(filename) {
   return { title: filename, trackNo: null };
 }
 
-function buildTrackFromPath(absPath) {
+function buildTrackFromPath(absPath, gdVaultRoot) {
   const relPath = path.relative(MUSIC_PATH, absPath);
-  const parts = relPath.split(path.sep);
   const filename = path.basename(absPath, path.extname(absPath));
   const parsed = parseTitleFromFilename(filename);
 
-  // Artist/album come from the FOLDER structure — the user curates folder names, while ID3 tags
-  // are inconsistent and create duplicate/garbage entries (one "2Pac" folder, tracks tagged
-  // "2 Pac"/"2Pac"/"2pac"; junk artist tags like "02"). Phase 2 only fills these from ID3 in the
-  // edge cases where the folder genuinely lacks the info (loose root files, "Compilations"
-  // folders, and 2-segment Artist/file paths with no album folder).
-  const hasArtistFolder = parts.length >= 2 && parts[0].toLowerCase() !== "compilations";
-  const artist = hasArtistFolder ? parts[0] : "Unknown Artist";
-  const album = parts.length >= 3 ? parts[parts.length - 2] : "Unknown Album";
+  let artist, album;
+  if (gdVaultRoot) {
+    // File came from a separate Grateful Dead taper-vault root: force the artist to "Grateful Dead"
+    // and use the show folder (first segment under the vault root) as the album, so it merges and
+    // dedupes with Music/Grateful Dead instead of becoming its own per-show "artist".
+    artist = GD_ARTIST;
+    const vparts = path.relative(gdVaultRoot, absPath).split(path.sep);
+    album = vparts.length >= 2 ? vparts[0] : "Unknown Show";
+  } else {
+    // Artist/album come from the FOLDER structure — the user curates folder names, while ID3 tags
+    // are inconsistent and create duplicate/garbage entries (one "2Pac" folder, tracks tagged
+    // "2 Pac"/"2Pac"/"2pac"; junk artist tags like "02"). Phase 2 only fills these from ID3 in the
+    // edge cases where the folder genuinely lacks the info (loose root files, "Compilations"
+    // folders, and 2-segment Artist/file paths with no album folder).
+    let parts = relPath.split(path.sep);
+    // The master drive has a stray nested "Music/Music/…" dump folder; a leading "Music" segment is
+    // not an artist, so drop it and use the real next segment (this also folds nested GD into dedup).
+    if (parts.length > 1 && parts[0].toLowerCase() === "music") parts = parts.slice(1);
+    const hasArtistFolder = parts.length >= 2 && parts[0].toLowerCase() !== "compilations";
+    artist = hasArtistFolder ? parts[0] : "Unknown Artist";
+    album = parts.length >= 3 ? parts[parts.length - 2] : "Unknown Album";
+  }
 
   return {
     id: makeId(relPath),
@@ -135,6 +170,62 @@ function sortLibrary(arr) {
     if (t !== 0) return t;
     return (a.title || "").localeCompare(b.title || "", undefined, { sensitivity: "base" });
   });
+}
+
+// Collapse duplicate Grateful Dead shows. The same performance (keyed by its YYYY-MM-DD date) can
+// live in Music/Grateful Dead AND the taper-vault roots. For each date we keep ONE show folder —
+// the one with the newest mtime (freshest transfer) — and drop the others' tracks. GD entries whose
+// album has no date (studio albums) and all non-GD tracks pass through untouched.
+function dedupeGdShows(tracks) {
+  const dateRe = /(\d{4}-\d{2}-\d{2})/;
+  const kept = [];
+  const byDate = new Map(); // date -> Map(showDir -> { mtime, tracks: [] })
+  const mtimeCache = new Map();
+  const showDirMtime = (dir) => {
+    if (mtimeCache.has(dir)) return mtimeCache.get(dir);
+    let m = 0;
+    try {
+      m = fs.statSync(dir).mtimeMs;
+    } catch {
+      m = 0;
+    }
+    mtimeCache.set(dir, m);
+    return m;
+  };
+
+  for (const t of tracks) {
+    const match = t.artist === GD_ARTIST ? (t.album || "").match(dateRe) : null;
+    if (!match) {
+      kept.push(t); // non-GD, or a GD studio album with no date
+      continue;
+    }
+    const date = match[1];
+    const showDir = path.dirname(path.join(MUSIC_PATH, t.relPath));
+    if (!byDate.has(date)) byDate.set(date, new Map());
+    const showMap = byDate.get(date);
+    if (!showMap.has(showDir)) showMap.set(showDir, { mtime: showDirMtime(showDir), tracks: [] });
+    showMap.get(showDir).tracks.push(t);
+  }
+
+  let shows = 0;
+  let dropped = 0;
+  for (const showMap of byDate.values()) {
+    let winner = null;
+    for (const [dir, info] of showMap) {
+      const better =
+        !winner ||
+        info.mtime > winner.mtime ||
+        (info.mtime === winner.mtime && info.tracks.length > winner.tracks.length);
+      if (better) winner = { dir, mtime: info.mtime, tracks: info.tracks };
+    }
+    kept.push(...winner.tracks);
+    shows += 1;
+    for (const [dir, info] of showMap) if (dir !== winner.dir) dropped += info.tracks.length;
+  }
+  if (byDate.size) {
+    console.log(`[gd-dedup] ${shows} unique GD shows kept, dropped ${dropped} duplicate tracks`);
+  }
+  return kept;
 }
 
 // Persist the library to disk (internal SSD, not the music drive — no contention with streaming).
@@ -242,22 +333,51 @@ async function buildIndex() {
     scanState = { scanning: false, scanned: 0, total: null };
     return;
   }
-  console.log(`[scan] found ${fileList.length} audio files`);
+  // Also walk the separate Grateful Dead taper-vault roots; their files are merged under the
+  // "Grateful Dead" artist and deduped by show date below.
+  const vaultRoots = gdVaultRoots();
+  const vaultFiles = [];
+  for (const root of vaultRoots) {
+    try {
+      const vf = await walkDir(root);
+      for (const f of vf) vaultFiles.push({ abs: f, root });
+    } catch (err) {
+      console.error(`[scan] GD vault walk failed (${root}):`, err.message);
+    }
+  }
+  console.log(`[scan] found ${fileList.length} audio files (+${vaultFiles.length} GD vault files from ${vaultRoots.length} roots)`);
 
   // Reconcile with existing tracks so prior enrichment is preserved across restarts/rescans.
   const prevById = new Map();
   for (const t of library) prevById.set(t.id, t);
 
-  const buffer = [];
-  const liveMap = new Map();
+  let buffer = [];
   for (const absPath of fileList) {
-    const relPath = path.relative(MUSIC_PATH, absPath);
-    const id = makeId(relPath);
-    liveMap.set(id, path.join(MUSIC_PATH, relPath));
-    const prev = prevById.get(id);
-    buffer.push(prev || buildTrackFromPath(absPath));
+    const id = makeId(path.relative(MUSIC_PATH, absPath));
+    buffer.push(prevById.get(id) || buildTrackFromPath(absPath));
   }
+  for (const { abs, root } of vaultFiles) {
+    const id = makeId(path.relative(MUSIC_PATH, abs));
+    buffer.push(prevById.get(id) || buildTrackFromPath(abs, root));
+  }
+
+  // Repair any tracks reused from the cache that were mis-filed under a phantom "Music" artist
+  // (the nested Music/Music dump folder) — re-derive artist/album so they attribute correctly and
+  // any nested Grateful Dead folds into the dedup below. Enrichment (duration etc.) is preserved.
+  for (const t of buffer) {
+    if (t.artist === "Music") {
+      const fixed = buildTrackFromPath(path.join(MUSIC_PATH, t.relPath));
+      t.artist = fixed.artist;
+      t.album = fixed.album;
+    }
+  }
+
+  // Merge + dedupe Grateful Dead shows (keep newest copy per date), then build idMap from survivors.
+  buffer = dedupeGdShows(buffer);
   sortLibrary(buffer);
+
+  const liveMap = new Map();
+  for (const t of buffer) liveMap.set(t.id, path.join(MUSIC_PATH, t.relPath));
 
   library = buffer;
   idMap = liveMap;
