@@ -308,7 +308,11 @@
     }
   }
 
+  let lastLoggedAt = 0;
   function logPlayEvent(id, position) {
+    const now = Date.now();
+    if (now - lastLoggedAt < 5000) return;
+    lastLoggedAt = now;
     postJson("api/play-events", { id, position: position || 0 }).catch(() => {});
   }
 
