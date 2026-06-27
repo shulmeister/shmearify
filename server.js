@@ -7,12 +7,14 @@ const mm = require("music-metadata");
 const pLimit = require("p-limit");
 const { spawn } = require("child_process");
 const { buildCanonicalMap, applyCanonicalNames, findReviewPairs, loadAliases } = require("./lib/canonical");
+const { createStore } = require("./lib/userstate");
 
 const MUSIC_PATH = process.env.MUSIC_PATH || "/Volumes/Shulmeister HD/iTunes/Music";
 const PORT = process.env.PORT || 3005;
 const CACHE_PATH = process.env.CACHE_PATH || path.join(__dirname, "library-cache.json");
 const ALIASES_PATH = process.env.ALIASES_PATH || path.join(__dirname, "data", "artist_aliases.json");
 const REVIEW_PATH = path.join(__dirname, "data", "artist_review.json");
+const USER_STATE_PATH = process.env.USER_STATE_PATH || path.join(__dirname, "data", "user_state.json");
 const FFMPEG_PATH = process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg";
 // Cap concurrent ffmpeg transcodes — this is a PUBLIC URL on a host that also runs CCA production
 // services, so unbounded spawns could exhaust CPU/memory. Over the cap we fall back to original
@@ -61,6 +63,7 @@ let idMap = new Map();
 let scanState = { scanning: false, scanned: 0, total: null };
 let artCache = new Map();
 const ART_CACHE_MAX = 300;
+const userStore = createStore(USER_STATE_PATH);
 
 // Count of in-flight audio streams. Phase-2 enrichment yields the disk to active playback (both
 // read from the same external USB drive — concurrent metadata reads starve the audio read and
@@ -106,6 +109,19 @@ async function walkDir(dir) {
 function formatDuration(sec) {
   if (!sec || !isFinite(sec)) return 0;
   return Math.round(sec * 10) / 10;
+}
+
+function trackById(id) {
+  return library.find((t) => t.id === id) || null;
+}
+
+function tracksByIds(ids) {
+  const out = [];
+  for (const id of ids) {
+    const t = trackById(id);
+    if (t) out.push(t);
+  }
+  return out;
 }
 
 function parseTitleFromFilename(filename) {
@@ -613,6 +629,101 @@ app.get("/api/search", (req, res) => {
     }
   }
   res.json({ tracks: out, total });
+});
+
+// --- User state endpoints (single user, no auth) ---
+
+app.get("/api/liked", (req, res) => {
+  res.json({ tracks: tracksByIds(userStore.getLiked()) });
+});
+
+app.post("/api/liked/:id", (req, res) => {
+  userStore.addLiked(req.params.id);
+  res.json({ liked: true });
+});
+
+app.delete("/api/liked/:id", (req, res) => {
+  userStore.removeLiked(req.params.id);
+  res.json({ liked: false });
+});
+
+app.get("/api/playlists", (req, res) => {
+  res.json(userStore.getPlaylists());
+});
+
+app.post("/api/playlists", (req, res) => {
+  const name = req.body && typeof req.body.name === "string" ? req.body.name : "My Playlist";
+  const created = userStore.createPlaylist(name);
+  res.status(201).json(created);
+});
+
+app.put("/api/playlists/:id", (req, res) => {
+  const name = req.body && typeof req.body.name === "string" ? req.body.name : null;
+  if (!name) return res.status(400).json({ error: "Missing name" });
+  if (!userStore.renamePlaylist(req.params.id, name)) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  res.json({ id: req.params.id, name });
+});
+
+app.delete("/api/playlists/:id", (req, res) => {
+  if (!userStore.deletePlaylist(req.params.id)) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  res.status(204).end();
+});
+
+app.get("/api/playlists/:id/tracks", (req, res) => {
+  const p = userStore.getPlaylist(req.params.id);
+  if (!p) return res.status(404).json({ error: "Playlist not found" });
+  res.json({ id: p.id, name: p.name, tracks: tracksByIds(p.tracks) });
+});
+
+app.post("/api/playlists/:id/tracks", (req, res) => {
+  const trackId = req.body && typeof req.body.trackId === "string" ? req.body.trackId : null;
+  if (!trackId) return res.status(400).json({ error: "Missing trackId" });
+  if (!userStore.addPlaylistTrack(req.params.id, trackId)) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  res.json({ added: true });
+});
+
+app.delete("/api/playlists/:id/tracks/:trackId", (req, res) => {
+  if (!userStore.removePlaylistTrack(req.params.id, req.params.trackId)) {
+    return res.status(404).json({ error: "Playlist or track not found" });
+  }
+  res.json({ removed: true });
+});
+
+app.put("/api/playlists/:id/tracks", (req, res) => {
+  const ordered = req.body && Array.isArray(req.body.tracks) ? req.body.tracks : null;
+  if (!ordered) return res.status(400).json({ error: "Missing tracks array" });
+  if (!userStore.reorderPlaylistTracks(req.params.id, ordered)) {
+    return res.status(404).json({ error: "Playlist not found" });
+  }
+  res.json({ reordered: true });
+});
+
+app.post("/api/play-events", (req, res) => {
+  const id = req.body && typeof req.body.id === "string" ? req.body.id : null;
+  const position = req.body && typeof req.body.position === "number" ? req.body.position : 0;
+  if (!id) return res.status(400).json({ error: "Missing id" });
+  userStore.logPlay(id);
+  if (position >= 0) userStore.setResume(id, position);
+  res.json({ logged: true });
+});
+
+app.get("/api/recently-played", (req, res) => {
+  const raw = userStore.getRecentlyPlayed(50);
+  res.json({ tracks: tracksByIds(raw.map((x) => x.id)) });
+});
+
+app.get("/api/resume", (req, res) => {
+  const r = userStore.getResume();
+  if (!r) return res.json(null);
+  const track = trackById(r.id);
+  if (!track) return res.json(null);
+  res.json({ track, position: r.position, ts: r.ts });
 });
 
 // Raw-file passthrough with HTTP Range support (206). No ffmpeg. Used for "original" quality and as

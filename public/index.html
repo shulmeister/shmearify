@@ -39,6 +39,8 @@
     </div>
     <input class="search-box" id="searchBox" placeholder="Search…" autocomplete="off">
     <div class="az-scrubber" id="azScrubber"></div>
+    <div class="library-header">Your Library</div>
+    <ul class="library-list" id="libraryList"></ul>
     <ul class="artist-list" id="artistList"></ul>
   </aside>
   <main class="main" id="main">
@@ -46,7 +48,15 @@
       <h2>Shmearify</h2>
       <p class="hero-tag">Tommy Engelshmear's whole library, anywhere.</p>
     </div>
+    <div id="resumePrompt"></div>
     <div id="trackPanel"></div>
+    <div class="queue-panel" id="queuePanel">
+      <div class="queue-header">
+        <span>Up Next</span>
+        <button class="btn" id="btnCloseQueue" aria-label="Close queue">×</button>
+      </div>
+      <div class="queue-list" id="queueList"></div>
+    </div>
   </main>
   <div class="player">
     <div class="player-left">
@@ -60,6 +70,7 @@
         </div>
         <div class="artist" id="playerArtist">—</div>
       </div>
+      <button class="btn btn-heart" id="btnHeart" title="Like" aria-label="Like">♡</button>
     </div>
     <div class="player-center">
       <div class="controls">
@@ -85,6 +96,17 @@
       </div>
     </div>
     <div class="player-right">
+      <button class="btn btn-queue" id="btnQueue" title="Queue" aria-label="Queue">☰</button>
+      <div class="sleep-wrap" id="sleepWrap" title="Sleep timer">
+        <button class="btn btn-sleep" id="btnSleep" aria-label="Sleep timer">⏲</button>
+        <div class="sleep-menu" id="sleepMenu">
+          <button data-min="15">15 min</button>
+          <button data-min="30">30 min</button>
+          <button data-min="45">45 min</button>
+          <button data-min="60">60 min</button>
+          <button data-min="0">Off</button>
+        </div>
+      </div>
       <div class="volume-wrap" title="Volume">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-1.5-3.35v6.7A4.5 4.5 0 0 0 16.5 12zM14 3.23v2.06a7 7 0 0 1 0 13.42v2.06a9 9 0 0 0 0-17.54z"/></svg>
         <input class="volume-slider" id="volumeSlider" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">

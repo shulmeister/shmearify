@@ -3,4 +3,5 @@ library-cache.json
 *.log
 .DS_Store
 data/artist_review.json
+data/user_state.json
 
