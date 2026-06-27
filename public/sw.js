@@ -1,6 +1,6 @@
 // Shmearify service worker
 // Bump CACHE_NAME on every deploy so stale shells/assets are flushed.
-const CACHE_NAME = "shmearify-v5";
+const CACHE_NAME = "shmearify-v6";
 
 const SHELL_URLS = ["/", "/index.html"];
 const STATIC_ASSETS = [

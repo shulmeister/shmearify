@@ -229,12 +229,17 @@
     if (state.likedIds.has(id)) {
       await apiDelete("api/liked/" + encodeURIComponent(id));
       state.likedIds.delete(id);
+      if (state.view === "liked") {
+        state.tracks = state.tracks.filter((t) => t.id !== id);
+        state.viewTotal = state.tracks.length;
+      }
     } else {
       await postJson("api/liked/" + encodeURIComponent(id));
       state.likedIds.add(id);
     }
     updateHeartUI();
     renderLibrary();
+    renderMain();
   }
 
   async function loadPlaylists() {
@@ -1290,6 +1295,7 @@
           ev.stopPropagation();
           await removeFromPlaylist(state.selectedPlaylistId, t.id);
           menu.remove();
+          renderMain();
         });
         menu.appendChild(remove);
       }
