@@ -508,6 +508,15 @@ function loadCache() {
         const ext = path.extname(t.relPath || "").toLowerCase();
         t.quality = deriveQualityFallback(ext);
       }
+
+      // Repair any tracks that were mis-filed under the phantom "Music" artist (the nested
+      // Music/Music dump folder). Re-derive artist/album from the folder path so they attribute
+      // correctly. This mirrors the cold-scan migration in buildIndex().
+      if (t.artist === "Music") {
+        const fixed = buildTrackFromPath(path.join(MUSIC_PATH, t.relPath));
+        t.artist = fixed.artist;
+        t.album = fixed.album;
+      }
     }
 
     library = tracks;

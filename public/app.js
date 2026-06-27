@@ -30,6 +30,7 @@
     shuffle: false,
     repeat: "off",        // off | all | one
     activeAudioIdx: 0,
+    pendingOriginalSeek: null, // seek target to apply after original-quality metadata loads
 
     // User state
     likedIds: new Set(),
@@ -215,6 +216,9 @@
     return img;
   }
 
+  // Guard against rapid repeated like/playlist mutations while a request is in flight.
+  const pendingLikes = new Set();
+
   // --- User state loaders ---
   async function loadLiked() {
     try {
@@ -226,16 +230,24 @@
   }
 
   async function toggleLiked(id) {
-    if (state.likedIds.has(id)) {
-      await apiDelete("api/liked/" + encodeURIComponent(id));
-      state.likedIds.delete(id);
-      if (state.view === "liked") {
-        state.tracks = state.tracks.filter((t) => t.id !== id);
-        state.viewTotal = state.tracks.length;
+    if (pendingLikes.has(id)) return;
+    pendingLikes.add(id);
+    try {
+      if (state.likedIds.has(id)) {
+        await apiDelete("api/liked/" + encodeURIComponent(id));
+        state.likedIds.delete(id);
+        if (state.view === "liked") {
+          state.tracks = state.tracks.filter((t) => t.id !== id);
+          state.viewTotal = state.tracks.length;
+        }
+      } else {
+        await postJson("api/liked/" + encodeURIComponent(id));
+        state.likedIds.add(id);
       }
-    } else {
-      await postJson("api/liked/" + encodeURIComponent(id));
-      state.likedIds.add(id);
+    } catch (e) {
+      // Leave local state unchanged on failure so the UI stays consistent.
+    } finally {
+      pendingLikes.delete(id);
     }
     updateHeartUI();
     renderLibrary();
@@ -1222,6 +1234,21 @@
       artTd.className = "col-art";
       artTd.appendChild(lazyArtImg(t.id, "row-art", t.title));
 
+      const numTd = document.createElement("td");
+      numTd.textContent = num;
+
+      const titleTd = document.createElement("td");
+      titleTd.innerHTML = esc(t.title) + badge;
+
+      const artistTd = document.createElement("td");
+      artistTd.textContent = t.artist;
+
+      const albumTd = document.createElement("td");
+      albumTd.textContent = t.album;
+
+      const durTd = document.createElement("td");
+      durTd.textContent = dur;
+
       const heartTd = document.createElement("td");
       heartTd.className = "col-heart";
       const heart = document.createElement("button");
@@ -1239,19 +1266,11 @@
       actionTd.appendChild(trackActionMenu(t, allowPlaylistRemove));
 
       tr.appendChild(artTd);
-      tr.innerHTML +=
-        "<td>" +
-        num +
-        "</td><td>" +
-        esc(t.title) +
-        badge +
-        "</td><td>" +
-        esc(t.artist) +
-        "</td><td>" +
-        esc(t.album) +
-        "</td><td>" +
-        dur +
-        "</td>";
+      tr.appendChild(numTd);
+      tr.appendChild(titleTd);
+      tr.appendChild(artistTd);
+      tr.appendChild(albumTd);
+      tr.appendChild(durTd);
       tr.appendChild(heartTd);
       tr.appendChild(actionTd);
       tr.addEventListener("click", () => playTrack(t, tracks));
@@ -1419,6 +1438,7 @@
         state.isPlaying = false;
         activeAudio().pause();
         activeAudio().src = "";
+        updateMediaSession();
       }
     }
     updatePlayerUI();
@@ -1466,6 +1486,7 @@
     }
     state.currentTrack = track;
     state.streamBaseOffset = 0;
+    state.pendingOriginalSeek = null;
 
     const audio = activeAudio();
     audio.src = getStreamUrl(track.id, state.quality, 0);
@@ -1602,6 +1623,7 @@
     const audio = activeAudio();
     state.currentTrack = track;
     state.streamBaseOffset = offset;
+    state.pendingOriginalSeek = null;
     audio.src = getStreamUrl(track.id, state.quality, offset);
     audio.volume = state.volume;
     audio.play().catch(() => {});
@@ -1609,6 +1631,7 @@
     updatePlayerUI();
     updateMediaSession();
     preloadNext();
+    logPlayEvent(track.id, 0);
   }
 
   function applyQuality() {
@@ -1620,13 +1643,8 @@
     if (state.quality === "original") {
       activeAudio().src = getStreamUrl(track.id, "original", 0);
       state.streamBaseOffset = 0;
-      activeAudio().addEventListener("loadedmetadata", function onMeta() {
-        activeAudio().removeEventListener("loadedmetadata", onMeta);
-        if (eff > 0 && activeAudio().duration && isFinite(activeAudio().duration)) {
-          activeAudio().currentTime = Math.min(eff, activeAudio().duration);
-        }
-        if (wasPlaying) activeAudio().play().catch(() => {});
-      });
+      // Stash the desired seek position; the global loadedmetadata handler will apply it once.
+      state.pendingOriginalSeek = { until: eff, playAfter: wasPlaying };
       if (!wasPlaying) activeAudio().load();
     } else {
       playTrackAtOffset(track, eff);
@@ -1830,14 +1848,12 @@
     navigator.mediaSession.setActionHandler("previoustrack", () => prevTrack());
     navigator.mediaSession.setActionHandler("nexttrack", () => nextTrack());
     navigator.mediaSession.setActionHandler("seekbackward", (details) => {
-      const audio = activeAudio();
       const delta = details.seekOffset || 10;
-      audio.currentTime = Math.max(0, audio.currentTime - delta);
+      seekBy(-delta);
     });
     navigator.mediaSession.setActionHandler("seekforward", (details) => {
-      const audio = activeAudio();
       const delta = details.seekOffset || 10;
-      audio.currentTime = Math.min(audio.duration || Infinity, audio.currentTime + delta);
+      seekBy(delta);
     });
     navigator.mediaSession.setActionHandler("seekto", (details) => {
       if (details.seekTime == null) return;
@@ -1922,6 +1938,12 @@
       const track = state.currentTrack;
       if (state.quality === "original") {
         els.timeTotal.textContent = formatTime(audio.duration);
+        if (state.pendingOriginalSeek && audio.duration && isFinite(audio.duration)) {
+          const target = Math.min(state.pendingOriginalSeek.until, audio.duration);
+          if (target > 0) audio.currentTime = target;
+          if (state.pendingOriginalSeek.playAfter) audio.play().catch(() => {});
+          state.pendingOriginalSeek = null;
+        }
       } else {
         els.timeTotal.textContent = track && track.duration ? formatTime(track.duration) : "--:--";
       }

@@ -1,6 +1,6 @@
 // Shmearify service worker
 // Bump CACHE_NAME on every deploy so stale shells/assets are flushed.
-const CACHE_NAME = "shmearify-v6";
+const CACHE_NAME = "shmearify-v7";
 
 const SHELL_URLS = ["/", "/index.html"];
 const STATIC_ASSETS = [
@@ -16,7 +16,20 @@ const STATIC_ASSETS = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS)).then(() => self.skipWaiting())
+    caches
+      .open(CACHE_NAME)
+      .then((cache) =>
+        // Add each asset individually so a single 404 does not fail the whole install.
+        Promise.allSettled(
+          STATIC_ASSETS.map((url) =>
+            cache.add(url).catch((err) => {
+              console.error("[sw] failed to cache", url, err.message);
+              return null;
+            })
+          )
+        )
+      )
+      .then(() => self.skipWaiting())
   );
 });
 
