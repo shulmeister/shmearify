@@ -1,0 +1,3 @@
+{
+  "_comment": "Manual artist canonicalization overrides. Keys may be a variant name or canonical normalized key; values are the desired display name. Applied on top of automatic case/whitespace/punctuation merging."
+}

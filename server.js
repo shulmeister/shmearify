@@ -6,16 +6,20 @@ const crypto = require("crypto");
 const mm = require("music-metadata");
 const pLimit = require("p-limit");
 const { spawn } = require("child_process");
+const { buildCanonicalMap, applyCanonicalNames, findReviewPairs, loadAliases } = require("./lib/canonical");
 
 const MUSIC_PATH = process.env.MUSIC_PATH || "/Volumes/Shulmeister HD/iTunes/Music";
 const PORT = process.env.PORT || 3005;
 const CACHE_PATH = process.env.CACHE_PATH || path.join(__dirname, "library-cache.json");
+const ALIASES_PATH = process.env.ALIASES_PATH || path.join(__dirname, "data", "artist_aliases.json");
+const REVIEW_PATH = path.join(__dirname, "data", "artist_review.json");
 const FFMPEG_PATH = process.env.FFMPEG_PATH || "/opt/homebrew/bin/ffmpeg";
 // Cap concurrent ffmpeg transcodes — this is a PUBLIC URL on a host that also runs CCA production
 // services, so unbounded spawns could exhaust CPU/memory. Over the cap we fall back to original
 // passthrough (no ffmpeg) rather than failing playback. Env-tunable.
 const MAX_TRANSCODES = parseInt(process.env.MAX_TRANSCODES || "3", 10) || 3;
 const AUDIO_EXTS = new Set([".mp3", ".m4a", ".flac", ".aac", ".wav", ".ogg"]);
+const LOSSLESS_EXTS = new Set([".flac", ".wav", ".aiff", ".alac"]);
 const MIME_TYPES = {
   ".mp3": "audio/mpeg",
   ".m4a": "audio/mp4",
@@ -172,6 +176,27 @@ function sortLibrary(arr) {
   });
 }
 
+function deriveQualityFallback(ext) {
+  return {
+    lossless: LOSSLESS_EXTS.has(ext),
+    bitrate: null,
+    codec: null,
+    sampleRate: null,
+    bits: null,
+  };
+}
+
+function buildQualityFromFormat(format, ext) {
+  const fallback = deriveQualityFallback(ext);
+  return {
+    lossless: typeof format.lossless === "boolean" ? format.lossless : fallback.lossless,
+    bitrate: format.bitrate || null,
+    codec: format.codec || null,
+    sampleRate: format.sampleRate || null,
+    bits: format.bitsPerSample || null,
+  };
+}
+
 // Collapse duplicate Grateful Dead shows. The same performance (keyed by its YYYY-MM-DD date) can
 // live in Music/Grateful Dead AND the taper-vault roots. For each date we keep ONE show folder —
 // the one with the newest mtime (freshest transfer) — and drop the others' tracks. GD entries whose
@@ -291,6 +316,13 @@ async function enrichTracks(targets) {
         if (common.genre && common.genre.length) track.genre = common.genre[0];
         if (common.year) track.year = common.year;
         if (common.track && common.track.no != null) track.trackNo = common.track.no;
+
+        const ext = path.extname(absPath).toLowerCase();
+        track.quality = buildQualityFromFormat(format, ext);
+      }
+      if (!track.quality) {
+        const ext = path.extname(absPath).toLowerCase();
+        track.quality = deriveQualityFallback(ext);
       }
       track.enriched = true;
 
@@ -376,6 +408,12 @@ async function buildIndex() {
   buffer = dedupeGdShows(buffer);
   sortLibrary(buffer);
 
+  // Canonicalize artist names (case/whitespace/punctuation variants) before serving or caching.
+  library = buffer;
+  canonicalizeLibrary();
+  sortLibrary(library);
+  buffer = library;
+
   const liveMap = new Map();
   for (const t of buffer) liveMap.set(t.id, path.join(MUSIC_PATH, t.relPath));
 
@@ -387,6 +425,39 @@ async function buildIndex() {
   console.log(`[scan] ${targets.length} of ${buffer.length} tracks need enrichment`);
   await enrichTracks(targets);
   console.log(`[scan] full scan done in ${(Date.now() - startTime) / 1000}s`);
+}
+
+// Index-level artist canonicalization: merge case/whitespace/punctuation variants.
+// Non-destructive (folders are untouched); applied after every scan and cache load.
+function canonicalizeLibrary() {
+  if (!library.length) return;
+  const counts = new Map();
+  for (const t of library) {
+    const a = t.artist || "Unknown Artist";
+    counts.set(a, (counts.get(a) || 0) + 1);
+  }
+  const artists = Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
+  const aliases = loadAliases(ALIASES_PATH);
+  const { map, groups } = buildCanonicalMap(artists, aliases);
+  applyCanonicalNames(library, map);
+
+  // Emit near-pairs for manual review (potential true misspellings we should NOT auto-merge).
+  try {
+    const pairs = findReviewPairs(map.keys());
+    if (pairs.length) {
+      const totalForKey = (key) => (groups.get(key) || []).reduce((s, v) => s + v.count, 0);
+      const review = pairs.map(([k1, k2]) => ({
+        a: { key: k1, total: totalForKey(k1), variants: (groups.get(k1) || []).map((v) => v.name) },
+        b: { key: k2, total: totalForKey(k2), variants: (groups.get(k2) || []).map((v) => v.name) },
+      }));
+      fs.writeFileSync(REVIEW_PATH, JSON.stringify({ generated: new Date().toISOString(), count: review.length, pairs: review }, null, 2));
+      console.log(`[canonical] ${review.length} near-pair(s) written to ${path.basename(REVIEW_PATH)} for review`);
+    } else {
+      if (fs.existsSync(REVIEW_PATH)) fs.unlinkSync(REVIEW_PATH);
+    }
+  } catch (err) {
+    console.error("[canonical] review write failed:", err.message);
+  }
 }
 
 // Warm start: cache is already loaded and serving. Finish any enrichment the cache still lacks,
@@ -415,9 +486,17 @@ function loadCache() {
       if (typeof t.enriched !== "boolean") {
         t.enriched = typeof t.duration === "number" && t.duration > 0;
       }
+      // Migrate caches without quality metadata (derive lossless from extension; full values fill
+      // on the next enrichment pass).
+      if (!t.quality) {
+        const ext = path.extname(t.relPath || "").toLowerCase();
+        t.quality = deriveQualityFallback(ext);
+      }
     }
 
     library = tracks;
+    canonicalizeLibrary();
+    sortLibrary(library);
     const newMap = new Map();
     for (const t of tracks) {
       newMap.set(t.id, path.join(MUSIC_PATH, t.relPath));

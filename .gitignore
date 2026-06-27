@@ -2,3 +2,5 @@ node_modules/
 library-cache.json
 *.log
 .DS_Store
+data/artist_review.json
+
