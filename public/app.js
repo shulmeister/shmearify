@@ -1183,6 +1183,7 @@
 
   function buildTrackTable(tracks, showLike, allowPlaylistRemove) {
     const inAlbum = state.view === "album";
+    const isSearch = state.view === "search";
     const frag = document.createDocumentFragment();
 
     if (tracks.length === 0) {
@@ -1200,7 +1201,7 @@
     const table = document.createElement("table");
     table.className = "track-table";
     const thead = document.createElement("thead");
-    thead.innerHTML = '<tr><th class="col-art"></th><th>#</th><th>Title</th><th>Artist</th><th>Album</th><th></th><th></th></tr>';
+    thead.innerHTML = '<tr><th class="col-art"></th><th>#</th><th>Title</th><th>Artist</th><th>Album</th><th></th><th></th><th></th></tr>';
     table.appendChild(thead);
     const tbody = document.createElement("tbody");
 
@@ -1748,7 +1749,7 @@
     const timerId = setTimeout(() => {
       state.sleepTimer = null;
       els.btnSleep.classList.remove("active");
-      togglePlay();
+      if (state.isPlaying) activeAudio().pause();
     }, minutes * 60 * 1000);
     state.sleepTimer = { until, timerId };
     els.btnSleep.classList.add("active");

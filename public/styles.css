@@ -138,8 +138,8 @@ body {
 .track-table tr { cursor: pointer; }
 .track-table tr:hover td { background: #1a1a1a; color: #fff; }
 .track-table tr.playing td { color: #1db954; }
-.track-table td:first-child, .track-table th:first-child { width: 40px; text-align: center; }
-.track-table td:last-child, .track-table th:last-child { width: 50px; text-align: right; }
+.track-table td:nth-child(2), .track-table th:nth-child(2) { width: 40px; text-align: center; }
+.track-table td:nth-child(6), .track-table th:nth-child(6) { width: 50px; text-align: right; }
 .quality-badge {
   display: inline-flex;
   align-items: center;
