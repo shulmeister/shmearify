@@ -527,7 +527,7 @@
       venue = parts[0] ? parts[0].trim() : null;
       city = parts[1] ? parts[1].trim() : null;
     }
-    return { album, count: al.count, date, year, venue, city };
+    return { album, count: al.count, coverId: al.coverId, date, year, venue, city };
   }
 
   function isDatedArtist() {
@@ -974,6 +974,7 @@
   function albumRow(al) {
     const row = document.createElement("div");
     row.className = "album-row";
+    if (al.coverId) row.appendChild(lazyArtImg(al.coverId, "album-art", al.album));
     const meta = document.createElement("div");
     meta.className = "album-meta";
     const title = document.createElement("div");

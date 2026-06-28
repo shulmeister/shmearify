@@ -161,9 +161,14 @@ function buildTrackFromPath(absPath, gdVaultRoot) {
     // The master drive has a stray nested "Music/Music/…" dump folder; a leading "Music" segment is
     // not an artist, so drop it and use the real next segment (this also folds nested GD into dedup).
     if (parts.length > 1 && parts[0].toLowerCase() === "music") parts = parts.slice(1);
-    const hasArtistFolder = parts.length >= 2 && parts[0].toLowerCase() !== "compilations";
-    artist = hasArtistFolder ? parts[0] : "Unknown Artist";
-    album = parts.length >= 3 ? parts[parts.length - 2] : "Unknown Album";
+    if (parts[0] && parts[0].toLowerCase() === "compilations") {
+      // Compilations folder: browse as one "Compilations" artist; each compilation folder is an album.
+      artist = "Compilations";
+      album = parts.length >= 2 ? parts[1] : "Unknown Album";
+    } else {
+      artist = parts.length >= 2 ? parts[0] : "Unknown Artist";
+      album = parts.length >= 3 ? parts[parts.length - 2] : "Unknown Album";
+    }
   }
 
   return {
@@ -178,6 +183,16 @@ function buildTrackFromPath(absPath, gdVaultRoot) {
     trackNo: parsed.trackNo,
     enriched: false, // set true once ID3 has been attempted — drives resumable enrichment
   };
+}
+
+// A cached track needs artist/album re-derivation if it predates a path-logic fix: the phantom
+// "Music" artist (nested Music/Music dump), or a Compilations-folder track not yet grouped under
+// the "Compilations" artist. buildIndex reuses cached tracks, so without this a reindex misses them.
+function needsRederive(t) {
+  if (t.artist === "Music") return true;
+  const segs = (t.relPath || "").split(path.sep);
+  const first = segs[0] && segs[0].toLowerCase() === "music" ? segs[1] || "" : segs[0];
+  return !!first && first.toLowerCase() === "compilations" && t.artist !== "Compilations";
 }
 
 function sortLibrary(arr) {
@@ -323,7 +338,7 @@ async function enrichTracks(targets) {
         // to ID3 ONLY where the folder lacked the info: loose root / "Compilations" → ID3 artist;
         // 2-segment Artist/file (no album folder) → ID3 album. Never override a real folder value.
         const parts = track.relPath.split(path.sep);
-        const artistFromFolder = parts.length >= 2 && parts[0].toLowerCase() !== "compilations";
+        const artistFromFolder = track.artist !== "Unknown Artist";
         if (!artistFromFolder && common.artist) track.artist = common.artist;
         if (parts.length < 3 && common.album) track.album = common.album;
 
@@ -413,7 +428,7 @@ async function buildIndex() {
   // (the nested Music/Music dump folder) — re-derive artist/album so they attribute correctly and
   // any nested Grateful Dead folds into the dedup below. Enrichment (duration etc.) is preserved.
   for (const t of buffer) {
-    if (t.artist === "Music") {
+    if (needsRederive(t)) {
       const fixed = buildTrackFromPath(path.join(MUSIC_PATH, t.relPath));
       t.artist = fixed.artist;
       t.album = fixed.album;
@@ -512,7 +527,7 @@ function loadCache() {
       // Repair any tracks that were mis-filed under the phantom "Music" artist (the nested
       // Music/Music dump folder). Re-derive artist/album from the folder path so they attribute
       // correctly. This mirrors the cold-scan migration in buildIndex().
-      if (t.artist === "Music") {
+      if (needsRederive(t)) {
         const fixed = buildTrackFromPath(path.join(MUSIC_PATH, t.relPath));
         t.artist = fixed.artist;
         t.album = fixed.album;
@@ -599,13 +614,15 @@ app.get("/api/albums", (req, res) => {
   const artist = typeof req.query.artist === "string" ? req.query.artist : "";
   if (!artist) return res.json([]);
   const counts = new Map();
+  const cover = new Map();
   for (const t of library) {
     if (t.artist !== artist) continue;
     const al = t.album || "Unknown Album";
     counts.set(al, (counts.get(al) || 0) + 1);
+    if (!cover.has(al)) cover.set(al, t.id);
   }
   const arr = Array.from(counts.entries())
-    .map(([album, count]) => ({ album, count }))
+    .map(([album, count]) => ({ album, count, coverId: cover.get(album) }))
     .sort((a, b) => a.album.localeCompare(b.album, undefined, { numeric: true, sensitivity: "base" }));
   res.json(arr);
 });

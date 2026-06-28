@@ -344,10 +344,11 @@ body {
   min-height: 48px;
 }
 .album-row:hover { background: #1a1a1a; color: #fff; }
-.album-row .album-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.album-row .album-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .album-row .album-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .album-row .album-sub { font-size: 12px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .album-row .album-count { color: #888; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.album-art { width: 48px; height: 48px; border-radius: 4px; object-fit: cover; background: #282828; flex: 0 0 auto; }
 .year-rail {
   position: sticky;
   top: 0;
@@ -703,7 +704,7 @@ body {
   .volume-wrap { display: none; }
   .year-header { top: 42px; }
   .queue-panel { width: 100%; }
-  .track-table .col-art, .track-table .col-heart, .track-table .col-action { display: none; }
+  .track-table .col-heart, .track-table .col-action { display: none; }
 }
 @media (max-width: 600px) {
   .track-table td:first-child, .track-table th:first-child { display: none; }
