@@ -9,6 +9,8 @@ const pLimit = require("p-limit");
 const MUSIC_PATH = process.env.MUSIC_PATH || "/Volumes/Shulmeister HD/iTunes/Music";
 const PORT = process.env.PORT || 3005;
 const CACHE_PATH = path.join(__dirname, "library-cache.json");
+const DATA_DIR = path.join(__dirname, "data");
+const LIKED_PATH = path.join(DATA_DIR, "liked.json");
 const AUDIO_EXTS = new Set([".mp3", ".m4a", ".flac", ".aac", ".wav", ".ogg"]);
 const MIME_TYPES = {
   ".mp3": "audio/mpeg",
@@ -24,7 +26,7 @@ let idMap = new Map();
 let scanState = { scanning: false, scanned: 0, total: null };
 let artCache = new Map();
 const ART_CACHE_MAX = 300;
-let likedIds = []; // Simple array stored in memory
+let likedIds = readLiked(); // persisted to data/liked.json (survives restart)
 
 function makeId(relPath) {
   return crypto.createHash("sha1").update(relPath).digest("hex").slice(0, 16);
@@ -262,7 +264,25 @@ app.get("/stream/:id", (req, res) => {
   }
 });
 
-// Liked tracks storage (in-memory for single-user app)
+// Liked tracks storage (persisted to data/liked.json for the single user)
+function readLiked() {
+  try {
+    const ids = JSON.parse(fs.readFileSync(LIKED_PATH, "utf8"));
+    return Array.isArray(ids) ? ids : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLiked() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(LIKED_PATH, JSON.stringify(likedIds));
+  } catch (e) {
+    console.error("Failed to persist liked tracks:", e.message);
+  }
+}
+
 function tracksByIds(ids) {
   const out = [];
   for (const id of ids) {
@@ -279,12 +299,14 @@ app.get("/api/liked", (req, res) => {
 app.post("/api/liked/:id", (req, res) => {
   if (!likedIds.includes(req.params.id)) {
     likedIds.push(req.params.id);
+    writeLiked();
   }
   res.json({ liked: true });
 });
 
 app.delete("/api/liked/:id", (req, res) => {
   likedIds = likedIds.filter((id) => id !== req.params.id);
+  writeLiked();
   res.json({ liked: false });
 });
 

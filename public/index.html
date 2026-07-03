@@ -394,6 +394,8 @@
       state.artists = Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
       renderArtists();
       renderTracks();
+      await loadLiked();
+      updatePlayerUI();
     } catch (e) {}
   }
 
@@ -512,8 +514,7 @@
         const tr = document.createElement("tr");
         if (state.currentTrack && state.currentTrack.id === t.id) tr.classList.add("playing");
         const dur = t.duration ? formatTime(t.duration) : "--:--";
-        const heartClass = state.likedIds.has(t.id) ? "heart liked" : "heart";
-        tr.innerHTML = '<td>' + (i + 1) + '</td><td>' + esc(t.title) + '</td><td>' + esc(t.artist) + '</td><td>' + esc(t.album) + '</td><td>' + dur + '</td>';
+        tr.innerHTML ='<td>' + (i + 1) + '</td><td>' + esc(t.title) + '</td><td>' + esc(t.artist) + '</td><td>' + esc(t.album) + '</td><td>' + dur + '</td>';
         tr.addEventListener("click", () => playTrack(t, tracks));
         tbody.appendChild(tr);
       });
