@@ -750,9 +750,17 @@
   }
 
   function jumpToArtistLetter(letter) {
-    const target = Array.from(els.artistList.children).find(
-      (li) => (li.textContent || "").trim().toUpperCase().startsWith(letter)
-    );
+    const findLi = () =>
+      Array.from(els.artistList.children).find((li) => (li.textContent || "").trim().toUpperCase().startsWith(letter));
+    let target = findLi();
+    if (!target) {
+      // The scrubber's letters come from the full artist list, but rendering is capped
+      // (ARTIST_RENDER_CAP) — a letter past the cap has no DOM node yet. Filter the sidebar
+      // down to that letter (same "starts with" logic as typing in search) so it does.
+      els.searchBox.value = letter;
+      renderArtists();
+      target = findLi();
+    }
     if (target) {
       target.scrollIntoView({ block: "start" });
       els.sidebar.classList.add("open");

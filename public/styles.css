@@ -681,7 +681,7 @@ body {
   .sidebar { position: fixed; top: 0; left: 0; width: 220px; height: 100%; z-index: 5; transform: translateX(-100%); transition: transform 0.2s; }
   .sidebar.open { transform: translateX(0); }
   .mobile-toggle { display: block; min-width: 44px; min-height: 44px; }
-  .main { padding: 48px 16px 16px; }
+  .main { padding: 64px 16px 16px; }
   .hero { height: 120px; margin-bottom: 16px; }
   .hero h2 { font-size: 22px; }
   .track-table td { padding: 12px 8px; }
