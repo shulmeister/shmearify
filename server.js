@@ -24,6 +24,7 @@ let idMap = new Map();
 let scanState = { scanning: false, scanned: 0, total: null };
 let artCache = new Map();
 const ART_CACHE_MAX = 300;
+let likedIds = []; // Simple array stored in memory
 
 function makeId(relPath) {
   return crypto.createHash("sha1").update(relPath).digest("hex").slice(0, 16);
@@ -259,6 +260,32 @@ app.get("/stream/:id", (req, res) => {
     });
     stream.pipe(res);
   }
+});
+
+// Liked tracks storage (in-memory for single-user app)
+function tracksByIds(ids) {
+  const out = [];
+  for (const id of ids) {
+    const t = library.find((x) => x.id === id);
+    if (t) out.push(t);
+  }
+  return out;
+}
+
+app.get("/api/liked", (req, res) => {
+  res.json({ tracks: tracksByIds(likedIds) });
+});
+
+app.post("/api/liked/:id", (req, res) => {
+  if (!likedIds.includes(req.params.id)) {
+    likedIds.push(req.params.id);
+  }
+  res.json({ liked: true });
+});
+
+app.delete("/api/liked/:id", (req, res) => {
+  likedIds = likedIds.filter((id) => id !== req.params.id);
+  res.json({ liked: false });
 });
 
 app.get("/art/:id", async (req, res) => {

@@ -145,7 +145,7 @@
   .progress-track { width: 100%; height: 4px; background: #535353; border-radius: 2px; position: relative; }
   .progress-fill { height: 100%; background: #1db954; border-radius: 2px; width: 0%; }
   .progress-wrap:hover .progress-fill { background: #1ed760; }
-  .player-right { display: flex; align-items: center; justify-content: flex-end; }
+  .player-right { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
   .notice { font-size: 11px; color: #e22134; }
   .center-panel {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -173,12 +173,53 @@
     background: #000; color: #fff; border: 1px solid #282828; border-radius: 4px;
     padding: 6px 10px; font-size: 13px; cursor: pointer;
   }
+  .volume-slider {
+    width: 60px; height: 4px; -webkit-appearance: none; background: #535353; border-radius: 2px; outline: none;
+  }
+  .volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 12px; height: 12px; border-radius: 50%; background: #fff; cursor: pointer;
+  }
+  .quality-select {
+    background: #242424; color: #b3b3b3; border: none; border-radius: 4px; padding: 2px 6px; font-size: 11px; outline: none;
+  }
+  .quality-wrap { display: flex; align-items: center; gap: 4px; }
+  .quality-label { font-size: 10px; color: #b3b3b3; }
+  .sleep-wrap { position: relative; }
+  .btn-sleep { color: #b3b3b3; padding: 4px; }
+  .sleep-menu {
+    position: absolute; bottom: 100%; right: 0; background: #242424; border-radius: 4px; padding: 8px;
+    display: none; flex-direction: column; gap: 4px; min-width: 80px; margin-bottom: 4px; z-index: 20;
+  }
+  .sleep-menu button {
+    background: #121212; color: #b3b3b3; border: none; padding: 6px 12px; border-radius: 4px; font-size: 12px; cursor: pointer;
+  }
+  .sleep-menu button:hover { background: #282828; color: #fff; }
+  .queue-panel {
+    position: fixed; bottom: 90px; right: 0; width: 320px; max-height: 400px; background: #181818;
+    border-top: 1px solid #282828; display: none; flex-direction: column; z-index: 100;
+  }
+  .queue-panel.open { display: flex; }
+  .queue-header {
+    padding: 12px; font-size: 14px; font-weight: 600; border-bottom: 1px solid #282828;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .queue-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .queue-item {
+    padding: 8px; font-size: 12px; color: #b3b3b3; cursor: pointer; border-radius: 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .queue-item:hover { background: #282828; color: #fff; }
+  .queue-item.active { color: #1db954; }
+  .heart { color: #e22134; font-size: 16px; cursor: pointer; }
+  .heart.liked { color: #e22134; }
   @media (max-width: 720px) {
     #app { grid-template-columns: 1fr; }
     .sidebar { position: fixed; top: 0; left: 0; width: 220px; height: 100%; z-index: 5; transform: translateX(-100%); transition: transform 0.2s; }
     .sidebar.open { transform: translateX(0); }
     .mobile-toggle { display: block; }
     .main { padding: 48px 16px 16px; }
+    .quality-wrap { display: none; }
+    .sleep-wrap { display: none; }
   }
 </style>
 </head>
@@ -195,6 +236,13 @@
       <div style="font-size:14px;">Loading…</div>
     </div>
   </main>
+  <div class="queue-panel" id="queuePanel">
+    <div class="queue-header">
+      <span>Up Next</span>
+      <button class="btn" id="btnCloseQueue" aria-label="Close queue">×</button>
+    </div>
+    <div class="queue-list" id="queueList"></div>
+  </div>
   <div class="player">
     <div class="player-left">
       <div class="art-wrap" id="artWrap">
@@ -204,9 +252,11 @@
         <div class="title" id="playerTitle">—</div>
         <div class="artist" id="playerArtist">—</div>
       </div>
+      <button class="btn btn-heart" id="btnHeart" title="Like" aria-label="Like">♡</button>
     </div>
     <div class="player-center">
       <div class="controls">
+        <button class="btn" id="btnShuffle" title="Shuffle" aria-label="Shuffle">⇄</button>
         <button class="btn" id="btnPrev" aria-label="Previous">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3 3h2v10H3zm3 5l8-5v10z"/></svg>
         </button>
@@ -217,6 +267,7 @@
         <button class="btn" id="btnNext" aria-label="Next">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M11 3h2v10h-2zM3 3v10l8-5z"/></svg>
         </button>
+        <button class="btn" id="btnRepeat" title="Repeat" aria-label="Repeat">↻</button>
       </div>
       <div class="progress-area">
         <span class="time" id="timeCurrent">0:00</span>
@@ -227,6 +278,30 @@
       </div>
     </div>
     <div class="player-right">
+      <button class="btn btn-queue" id="btnQueue" title="Queue" aria-label="Queue">☰</button>
+      <div class="sleep-wrap" id="sleepWrap" title="Sleep timer">
+        <button class="btn btn-sleep" id="btnSleep" aria-label="Sleep timer">⏲</button>
+        <div class="sleep-menu" id="sleepMenu">
+          <button data-min="15">15 min</button>
+          <button data-min="30">30 min</button>
+          <button data-min="45">45 min</button>
+          <button data-min="60">60 min</button>
+          <button data-min="0">Off</button>
+        </div>
+      </div>
+      <div class="volume-wrap" title="Volume">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-1.5-3.35v6.7A4.5 4.5 0 0 0 16.5 12zM14 3.23v2.06a7 7 0 0 1 0 13.42v2.06a9 7 0 1 0 0-17.54z"/></svg>
+        <input class="volume-slider" id="volumeSlider" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
+      </div>
+      <div class="quality-wrap">
+        <span class="quality-label">Quality</span>
+        <select class="quality-select" id="qualitySelect">
+          <option value="original">Original</option>
+          <option value="high">High</option>
+          <option value="normal">Normal</option>
+          <option value="low">Low (Data Saver)</option>
+        </select>
+      </div>
       <span class="notice" id="playerNotice"></span>
     </div>
   </div>
@@ -244,7 +319,11 @@
     queueIndex: -1,
     currentTrack: null,
     isPlaying: false,
+    shuffle: false,
+    repeat: false,
+    sleepTimer: null,
     status: { scanning: false, scanned: 0, total: null, mounted: true, ready: false, trackCount: 0 },
+    likedIds: new Set(),
   };
 
   const els = {
@@ -256,6 +335,11 @@
     btnPlay: document.getElementById("btnPlay"),
     btnPrev: document.getElementById("btnPrev"),
     btnNext: document.getElementById("btnNext"),
+    btnShuffle: document.getElementById("btnShuffle"),
+    btnRepeat: document.getElementById("btnRepeat"),
+    btnQueue: document.getElementById("btnQueue"),
+    btnCloseQueue: document.getElementById("btnCloseQueue"),
+    btnHeart: document.getElementById("btnHeart"),
     iconPlay: document.getElementById("iconPlay"),
     iconPause: document.getElementById("iconPause"),
     playerTitle: document.getElementById("playerTitle"),
@@ -268,6 +352,13 @@
     playerNotice: document.getElementById("playerNotice"),
     mobileToggle: document.getElementById("mobileToggle"),
     sidebar: document.getElementById("sidebar"),
+    volumeSlider: document.getElementById("volumeSlider"),
+    qualitySelect: document.getElementById("qualitySelect"),
+    sleepWrap: document.getElementById("sleepWrap"),
+    sleepMenu: document.getElementById("sleepMenu"),
+    btnSleep: document.getElementById("btnSleep"),
+    queuePanel: document.getElementById("queuePanel"),
+    queueList: document.getElementById("queueList"),
   };
 
   function formatTime(s) {
@@ -286,9 +377,7 @@
   async function pollStatus() {
     try {
       state.status = await fetchJson("api/status");
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
     renderState();
     if (!state.status.ready || state.status.scanning) {
       setTimeout(pollStatus, 2000);
@@ -305,9 +394,18 @@
       state.artists = Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
       renderArtists();
       renderTracks();
-    } catch (e) {
-      // ignore
-    }
+    } catch (e) {}
+  }
+
+  async function loadLiked() {
+    try {
+      const data = await fetchJson("api/liked");
+      if (data.tracks) {
+        for (const t of data.tracks) {
+          state.likedIds.add(t.id);
+        }
+      }
+    } catch (e) {}
   }
 
   function renderState() {
@@ -414,6 +512,7 @@
         const tr = document.createElement("tr");
         if (state.currentTrack && state.currentTrack.id === t.id) tr.classList.add("playing");
         const dur = t.duration ? formatTime(t.duration) : "--:--";
+        const heartClass = state.likedIds.has(t.id) ? "heart liked" : "heart";
         tr.innerHTML = '<td>' + (i + 1) + '</td><td>' + esc(t.title) + '</td><td>' + esc(t.artist) + '</td><td>' + esc(t.album) + '</td><td>' + dur + '</td>';
         tr.addEventListener("click", () => playTrack(t, tracks));
         tbody.appendChild(tr);
@@ -440,10 +539,16 @@
 
     els.main.innerHTML = "";
     els.main.appendChild(frag);
+    renderQueue();
   }
 
   function esc(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function getStreamUrl(track) {
+    const quality = els.qualitySelect ? els.qualitySelect.value : "original";
+    return "stream/" + track.id + "?q=" + quality;
   }
 
   function playTrack(track, queue) {
@@ -451,7 +556,7 @@
     state.queueIndex = state.queue.findIndex(t => t.id === track.id);
     if (state.queueIndex < 0) state.queueIndex = 0;
     state.currentTrack = track;
-    els.audio.src = "stream/" + track.id;
+    els.audio.src = getStreamUrl(track);
     els.audio.play().catch(() => {});
     state.isPlaying = true;
     updatePlayerUI();
@@ -464,12 +569,14 @@
       els.playerTitle.textContent = "—";
       els.playerArtist.textContent = "—";
       els.artWrap.innerHTML = '<svg class="art-placeholder" viewBox="0 0 24 24" fill="#b3b3b3"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>';
+      els.btnHeart.classList.remove("liked");
       return;
     }
     els.playerTitle.textContent = t.title;
     els.playerArtist.textContent = t.artist;
     els.iconPlay.style.display = state.isPlaying ? "none" : "";
     els.iconPause.style.display = state.isPlaying ? "" : "none";
+    els.btnHeart.classList.toggle("liked", state.likedIds.has(t.id));
     const img = document.createElement("img");
     img.src = "art/" + t.id;
     img.onerror = function() {
@@ -487,14 +594,28 @@
 
   function prevTrack() {
     if (!state.queue.length) return;
-    state.queueIndex = (state.queueIndex - 1 + state.queue.length) % state.queue.length;
+    if (state.shuffle) {
+      state.queueIndex = Math.floor(Math.random() * state.queue.length);
+    } else {
+      state.queueIndex = (state.queueIndex - 1 + state.queue.length) % state.queue.length;
+    }
     playTrack(state.queue[state.queueIndex], state.queue);
   }
 
   function nextTrack() {
     if (!state.queue.length) return;
-    state.queueIndex = (state.queueIndex + 1) % state.queue.length;
-    playTrack(state.queue[state.queueIndex], state.queue);
+    if (state.shuffle) {
+      state.queueIndex = Math.floor(Math.random() * state.queue.length);
+    } else {
+      state.queueIndex = (state.queueIndex + 1) % state.queue.length;
+    }
+    if (state.repeat && state.queueIndex === 0) {
+      playTrack(state.queue[0], state.queue);
+    } else if (!state.repeat && state.queueIndex === 0 && els.audio.currentTime < 3) {
+      els.audio.pause();
+    } else {
+      playTrack(state.queue[state.queueIndex], state.queue);
+    }
   }
 
   function seekTo(e) {
@@ -505,10 +626,59 @@
     }
   }
 
+  function toggleHeart() {
+    if (!state.currentTrack) return;
+    const id = state.currentTrack.id;
+    if (state.likedIds.has(id)) {
+      state.likedIds.delete(id);
+      fetch("api/liked/" + id, { method: "DELETE" }).catch(() => {});
+    } else {
+      state.likedIds.add(id);
+      fetch("api/liked/" + id, { method: "POST" }).catch(() => {});
+    }
+    updatePlayerUI();
+  }
+
+  function renderQueue() {
+    const items = state.queue.slice(state.queueIndex + 1);
+    if (items.length === 0) {
+      els.queueList.innerHTML = "";
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    items.forEach((t, i) => {
+      const div = document.createElement("div");
+      div.className = "queue-item";
+      div.textContent = t.title + " — " + t.artist;
+      div.addEventListener("click", () => {
+        state.queueIndex += i + 1;
+        playTrack(t, state.queue);
+      });
+      frag.appendChild(div);
+    });
+    els.queueList.innerHTML = "";
+    els.queueList.appendChild(frag);
+  }
+
   // Events
   els.btnPlay.addEventListener("click", togglePlay);
   els.btnPrev.addEventListener("click", prevTrack);
   els.btnNext.addEventListener("click", nextTrack);
+  els.btnShuffle.addEventListener("click", () => {
+    state.shuffle = !state.shuffle;
+    els.btnShuffle.style.color = state.shuffle ? "#1db954" : "#b3b3b3";
+  });
+  els.btnRepeat.addEventListener("click", () => {
+    state.repeat = !state.repeat;
+    els.btnRepeat.style.color = state.repeat ? "#1db954" : "#b3b3b3";
+  });
+  els.btnQueue.addEventListener("click", () => {
+    els.queuePanel.classList.add("open");
+  });
+  els.btnCloseQueue.addEventListener("click", () => {
+    els.queuePanel.classList.remove("open");
+  });
+  els.btnHeart.addEventListener("click", toggleHeart);
   els.progressWrap.addEventListener("click", seekTo);
 
   els.audio.addEventListener("play", () => { state.isPlaying = true; updatePlayerUI(); });
@@ -525,6 +695,33 @@
   els.audio.addEventListener("error", () => {
     els.playerNotice.textContent = "Playback error";
     setTimeout(() => els.playerNotice.textContent = "", 3000);
+  });
+
+  els.volumeSlider.addEventListener("input", () => {
+    els.audio.volume = els.volumeSlider.value;
+  });
+
+  // Sleep timer
+  els.btnSleep.addEventListener("click", (e) => {
+    e.stopPropagation();
+    els.sleepMenu.style.display = els.sleepMenu.style.display === "flex" ? "none" : "flex";
+  });
+  els.sleepMenu.addEventListener("click", (e) => {
+    if (e.target.tagName === "BUTTON") {
+      const min = parseInt(e.target.dataset.min);
+      if (state.sleepTimer) clearTimeout(state.sleepTimer);
+      if (min > 0) {
+        state.sleepTimer = setTimeout(() => {
+          els.audio.pause();
+          state.sleepTimer = null;
+          els.playerNotice.textContent = "Sleep timer";
+        }, min * 60 * 1000);
+      }
+      els.sleepMenu.style.display = "none";
+    }
+  });
+  document.addEventListener("click", (e) => {
+    if (!els.sleepWrap.contains(e.target)) els.sleepMenu.style.display = "none";
   });
 
   let debounceTimer;
