@@ -1,6 +1,6 @@
 // Shmearify service worker
 // Bump CACHE_NAME on every deploy so stale shells/assets are flushed.
-const CACHE_NAME = "shmearify-v8";
+const CACHE_NAME = "shmearify-v9";
 
 const SHELL_URLS = ["/", "/index.html"];
 const STATIC_ASSETS = [
@@ -42,17 +42,23 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-function isAudioOrArt(req) {
+function isNoStore(req) {
   const url = new URL(req.url);
-  return url.pathname.startsWith("/stream/") || url.pathname.startsWith("/art/");
+  // Audio/art are large and per-track; /api/ is live library + user state (playlists, liked,
+  // resume, status, search…). All three must always hit the network — cache-first here previously
+  // served stale JSON after mutations (e.g. a removed playlist track reappearing) until a later
+  // background refresh happened to land.
+  return (
+    url.pathname.startsWith("/stream/") || url.pathname.startsWith("/art/") || url.pathname.startsWith("/api/")
+  );
 }
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
-  // Never cache dynamic audio streams or artwork.
-  if (isAudioOrArt(req)) {
+  // Never cache dynamic audio streams, artwork, or API responses.
+  if (isNoStore(req)) {
     return event.respondWith(fetch(req));
   }
 
