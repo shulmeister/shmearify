@@ -555,9 +555,79 @@ function loadCache() {
 const app = express();
 app.use(cors());
 app.use(express.json());
-// Never cache the HTML shell — it carries the client code, and a stale copy means deploys silently
-// don't reach the browser (Cloudflare otherwise stamps max-age, and mobile browsers cache hard).
-// Static assets (images) still cache normally.
+
+// Serve the PWA shell. We do this explicitly (before express.static) so deep-link query strings such
+// as ?track=<id> or ?artist=...&album=... always return index.html and never a cached generic shell.
+// Open Graph tags are injected server-side for shared links so they unfurl with track/album info.
+let indexHtml = "";
+try {
+  indexHtml = fs.readFileSync(path.join(__dirname, "public", "index.html"), "utf8");
+} catch (err) {
+  console.error("[server] could not read public/index.html:", err.message);
+}
+
+function escapeHtmlAttr(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function shellWithMeta(overrides) {
+  let html = indexHtml;
+  const tags = {
+    "og:title": overrides.title,
+    "og:description": overrides.description,
+    "og:image": overrides.image,
+    "og:image:secure_url": overrides.image,
+    "twitter:title": overrides.title,
+    "twitter:description": overrides.description,
+    "twitter:image": overrides.image,
+  };
+  for (const [tag, value] of Object.entries(tags)) {
+    if (!value) continue;
+    const attr = tag.startsWith("og:") ? "property" : "name";
+    const safe = escapeHtmlAttr(value);
+    const regex = new RegExp(`<meta\\s+${attr}="${tag}"\\s+content="[^"]*"\\s*>`);
+    if (regex.test(html)) {
+      html = html.replace(regex, `<meta ${attr}="${tag}" content="${safe}">`);
+    }
+  }
+  return html;
+}
+
+app.get("/", (req, res) => {
+  const trackId = typeof req.query.track === "string" ? req.query.track : null;
+  const artist = typeof req.query.artist === "string" ? req.query.artist : null;
+  const album = typeof req.query.album === "string" ? req.query.album : null;
+  let html = indexHtml;
+
+  if (trackId) {
+    const track = trackById(trackId);
+    if (track) {
+      html = shellWithMeta({
+        title: `${track.title} · ${track.artist}`,
+        description: `Listen to ${track.title} by ${track.artist} on Shmearify.`,
+        image: `https://shmearify.coloradocareassist.com/art/${trackId}`,
+      });
+    }
+  } else if (artist && album) {
+    const coverTrack = library.find((t) => t.artist === artist && t.album === album);
+    html = shellWithMeta({
+      title: `${album} · ${artist}`,
+      description: `Listen to ${album} by ${artist} on Shmearify.`,
+      image: coverTrack ? `https://shmearify.coloradocareassist.com/art/${coverTrack.id}` : null,
+    });
+  }
+
+  res.setHeader("Cache-Control", "no-store, must-revalidate");
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(html);
+});
+
+// Static assets (images) cache normally; index.html is served by the explicit / route above.
 app.use(
   express.static(path.join(__dirname, "public"), {
     setHeaders: (res, filePath) => {
@@ -634,6 +704,14 @@ app.get("/api/album-tracks", (req, res) => {
   const album = typeof req.query.album === "string" ? req.query.album : "";
   if (!artist || !album) return res.json([]);
   res.json(library.filter((t) => t.artist === artist && t.album === album));
+});
+
+// Single track by id — used by deep links so the client can resolve ?track=<id> without holding
+// the full library.
+app.get("/api/track/:id", (req, res) => {
+  const track = trackById(req.params.id);
+  if (!track) return res.status(404).json({ error: "Track not found" });
+  res.json(track);
 });
 
 // Server-side search across title/artist/album. Returns up to `max` hits plus a total count so

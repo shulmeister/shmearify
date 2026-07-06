@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#121212">
+<meta name="theme-color" content="#08080b">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Shmearify">
@@ -11,7 +11,6 @@
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icons/icon-192.png">
 <title>Shmearify</title>
-<!-- Link preview (Open Graph + Twitter) — large image card when the URL is shared via iMessage/social -->
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Shmearify">
 <meta property="og:url" content="https://shmearify.coloradocareassist.com/">
@@ -29,39 +28,83 @@
 <meta name="twitter:image" content="https://shmearify.coloradocareassist.com/header.jpg">
 <link rel="stylesheet" href="/styles.css">
 </head>
-<body>
-<button class="mobile-toggle" id="mobileToggle" aria-label="Menu">&#9776;</button>
+<body class="theme-dark">
 <div id="app">
   <aside class="sidebar" id="sidebar">
-    <div class="brand">
-      <img class="brand-logo" src="/profile.jpg" alt="Shmearify logo">
-      <h1>Shmearify</h1>
+    <nav class="nav-panel">
+      <div class="brand">
+        <div class="brand-logo" aria-hidden="true"></div>
+        <h1>Shmearify</h1>
+      </div>
+      <ul class="nav-list">
+        <li class="active" data-nav="home">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5"><path d="M4 11l8-6.5 8 6.5V20a1.5 1.5 0 0 1-1.5 1.5h-5v-6h-3v6h-5A1.5 1.5 0 0 1 4 20z"/></svg>
+          <span>Home</span>
+        </li>
+        <li data-nav="search">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M16 16l4 4"/></svg>
+          <span>Search</span>
+        </li>
+      </ul>
+    </nav>
+    <div class="library-panel">
+      <div class="library-header">
+        <div class="library-title">
+          <svg class="lib-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h7"/><path d="M17 3v12l3-2"/></svg>
+          <span>Your Library</span>
+        </div>
+        <button class="btn btn-add" id="btnAddPlaylist" title="New playlist" aria-label="New playlist">+</button>
+      </div>
+      <input class="search-box" id="searchBox" placeholder="Search artists…" autocomplete="off">
+      <ul class="library-list" id="libraryList"></ul>
+      <ul class="artist-list" id="artistList"></ul>
     </div>
-    <input class="search-box" id="searchBox" placeholder="Search…" autocomplete="off">
-    <div class="az-scrubber" id="azScrubber"></div>
-    <div class="library-header">Your Library</div>
-    <ul class="library-list" id="libraryList"></ul>
-    <ul class="artist-list" id="artistList"></ul>
   </aside>
+
   <main class="main" id="main">
-    <div class="hero">
-      <h2>Shmearify</h2>
-      <p class="hero-tag">Tommy Engelshmear's whole library, anywhere.</p>
+    <div class="home-header" id="homeHeader">
+      <div class="greeting" id="greeting"></div>
+      <div class="pill-tabs" id="pillTabs"></div>
     </div>
     <div id="resumePrompt"></div>
     <div id="trackPanel"></div>
-    <div class="queue-panel" id="queuePanel">
-      <div class="queue-header">
-        <span>Up Next</span>
-        <button class="btn" id="btnCloseQueue" aria-label="Close queue">×</button>
-      </div>
-      <div class="queue-list" id="queueList"></div>
-    </div>
   </main>
+
+  <aside class="now-playing" id="nowPlaying">
+    <div class="np-header">
+      <span class="np-album" id="npAlbum"></span>
+      <div class="np-actions">
+        <button class="btn" id="btnNpShare" title="Share" aria-label="Share">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+        </button>
+        <button class="btn" id="btnNpMore" title="Queue" aria-label="Queue">⋯</button>
+      </div>
+    </div>
+    <div class="np-scroll">
+      <div class="np-cover-wrap">
+        <div class="np-cover" id="npCover"></div>
+      </div>
+      <div class="np-title-row">
+        <div class="np-meta">
+          <div class="np-title" id="npTitle">—</div>
+          <div class="np-artist" id="npArtist">—</div>
+        </div>
+        <button class="btn btn-heart" id="btnNpHeart" title="Like" aria-label="Like">♡</button>
+      </div>
+      <div class="np-queue" id="npQueuePanel">
+        <div class="np-queue-header">
+          <span>Next in queue</span>
+          <button class="btn" id="btnOpenQueue" title="Open queue" aria-label="Open queue">Open queue</button>
+        </div>
+        <div class="np-queue-list" id="npQueueList"></div>
+      </div>
+    </div>
+  </aside>
+
   <div class="player">
     <div class="player-left">
       <div class="art-wrap" id="artWrap">
-        <svg class="art-placeholder" viewBox="0 0 24 24" fill="#b3b3b3"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
+        <svg class="art-placeholder" viewBox="0 0 24 24" fill="#9a97ab"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
       </div>
       <div class="player-info">
         <div class="title-row">
@@ -76,14 +119,14 @@
       <div class="controls">
         <button class="btn" id="btnShuffle" title="Shuffle" aria-label="Shuffle">⇄</button>
         <button class="btn" id="btnPrev" aria-label="Previous">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3 3h2v10H3zm3 5l8-5v10z"/></svg>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3 6l9-6v12z"/></svg>
         </button>
         <button class="btn btn-play" id="btnPlay" aria-label="Play/Pause">
-          <svg id="iconPlay" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4 3l10 5-10 5z"/></svg>
-          <svg id="iconPause" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none"><path d="M4 3h3v10H4zm5 0h3v10H9z"/></svg>
+          <svg id="iconPlay" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          <svg id="iconPause" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
         </button>
         <button class="btn" id="btnNext" aria-label="Next">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M11 3h2v10h-2zM3 3v10l8-5z"/></svg>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM6 6v12l9-6z"/></svg>
         </button>
         <button class="btn" id="btnRepeat" title="Repeat" aria-label="Repeat">↻</button>
       </div>
@@ -96,19 +139,8 @@
       </div>
     </div>
     <div class="player-right">
-      <button class="btn btn-queue" id="btnQueue" title="Queue" aria-label="Queue">☰</button>
-      <div class="sleep-wrap" id="sleepWrap" title="Sleep timer">
-        <button class="btn btn-sleep" id="btnSleep" aria-label="Sleep timer">⏲</button>
-        <div class="sleep-menu" id="sleepMenu">
-          <button data-min="15">15 min</button>
-          <button data-min="30">30 min</button>
-          <button data-min="45">45 min</button>
-          <button data-min="60">60 min</button>
-          <button data-min="0">Off</button>
-        </div>
-      </div>
       <div class="volume-wrap" title="Volume">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-1.5-3.35v6.7A4.5 4.5 0 0 0 16.5 12zM14 3.23v2.06a7 7 0 0 1 0 13.42v2.06a9 9 0 0 0 0-17.54z"/></svg>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-1.5-3.35v6.7A4.5 4.5 0 0 0 16.5 12zM14 3.23v2.06a7 7 0 0 1 0 13.42v2.06a9 9 0 0 0 0-17.54z"/></svg>
         <input class="volume-slider" id="volumeSlider" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
       </div>
       <div class="quality-wrap">
@@ -120,10 +152,76 @@
           <option value="low">Low (Data Saver)</option>
         </select>
       </div>
+      <div class="sleep-wrap" id="sleepWrap" title="Sleep timer">
+        <button class="btn btn-sleep" id="btnSleep" aria-label="Sleep timer">⏲</button>
+        <div class="sleep-menu" id="sleepMenu">
+          <button data-min="15">15 min</button>
+          <button data-min="30">30 min</button>
+          <button data-min="45">45 min</button>
+          <button data-min="60">60 min</button>
+          <button data-min="0">Off</button>
+        </div>
+      </div>
+      <div class="output-wrap" id="outputWrap" title="Audio output">
+        <button class="btn btn-output" id="btnOutput" aria-label="Audio output" aria-haspopup="true" aria-expanded="false">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3 7h18v10h-2V9H5v8H3V7zm4 8a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm4 0a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm4 0a2 2 0 1 1 0 4 2 2 0 0 1 0-4z" opacity=".5"/><path d="M21 3H3c-1.1 0-2 .9-2 2v2h22V5c0-1.1-.9-2-2-2zM1 17v2c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2v-2H1z"/></svg>
+        </button>
+      </div>
       <span class="notice" id="playerNotice"></span>
     </div>
   </div>
+
+  <div class="mobile-player-pill" id="mobilePlayerPill">
+    <div class="mpp-cover" id="mppCover"></div>
+    <div class="mpp-meta">
+      <div class="mpp-title" id="mppTitle">—</div>
+      <div class="mpp-artist" id="mppArtist">—</div>
+    </div>
+    <button class="btn mpp-share" id="btnMppShare" aria-label="Share">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+    </button>
+    <button class="btn mpp-output" id="btnMppOutput" aria-label="Audio output">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 7h18v10h-2V9H5v8H3V7zm4 8a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm4 0a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm4 0a2 2 0 1 1 0 4 2 2 0 0 1 0-4z" opacity=".5"/><path d="M21 3H3c-1.1 0-2 .9-2 2v2h22V5c0-1.1-.9-2-2-2zM1 17v2c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2v-2H1z"/></svg>
+    </button>
+    <div class="mpp-eq" id="mppEq">
+      <span></span><span></span><span></span>
+    </div>
+    <button class="btn mpp-pause" id="btnMppPause" aria-label="Pause">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+    </button>
+  </div>
+
+  <nav class="mobile-tab-bar" id="mobileTabBar">
+    <button class="tab-item active" data-tab="home">
+      <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5"><path d="M4 11l8-6.5 8 6.5V20a1.5 1.5 0 0 1-1.5 1.5h-5v-6h-3v6h-5A1.5 1.5 0 0 1 4 20z"/></svg>
+      <span>Home</span>
+    </button>
+    <button class="tab-item" data-tab="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M16 16l4 4"/></svg>
+      <span>Search</span>
+    </button>
+    <button class="tab-item" data-tab="library">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h7"/><path d="M17 3v12l3-2"/></svg>
+      <span>Library</span>
+    </button>
+    <button class="tab-item" data-tab="theme" id="btnThemeToggle" title="Toggle theme" aria-label="Toggle theme">
+      <svg id="themeIconSun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      <svg id="themeIconMoon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <span>Theme</span>
+    </button>
+  </nav>
 </div>
+
+<div class="queue-panel" id="queuePanel">
+  <div class="queue-header">
+    <span>Up Next</span>
+    <button class="btn" id="btnCloseQueue" aria-label="Close queue">×</button>
+  </div>
+  <div class="queue-list" id="queueList"></div>
+</div>
+
+<div class="output-menu" id="outputMenu" role="menu" aria-label="Audio output options"></div>
+
 <script src="/app.js"></script>
 </body>
 </html>
