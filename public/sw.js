@@ -1,11 +1,15 @@
 // Shmearify service worker
 // Bump CACHE_NAME on every deploy so stale shells/assets are flushed.
-const CACHE_NAME = "shmearify-v10";
+// IMPORTANT: keep the ?v=N on /app.js + /styles.css below (and in index.html)
+// in sync with this vN. Versioned asset URLs force fresh JS/CSS on the FIRST
+// load after a deploy — a returning user's old SW can't serve a URL it never
+// cached — which prevents the "new index.html + old cached app.js" init crash.
+const CACHE_NAME = "shmearify-v11";
 
 const SHELL_URLS = ["/", "/index.html"];
 const STATIC_ASSETS = [
-  "/app.js",
-  "/styles.css",
+  "/app.js?v=11",
+  "/styles.css?v=11",
   "/manifest.json",
   "/profile.jpg",
   "/header.jpg",
