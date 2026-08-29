@@ -837,17 +837,47 @@ function serveOriginal(req, res, absPath, stats) {
   const contentType = MIME_TYPES[ext] || "application/octet-stream";
   const size = stats.size;
 
+  const sendWhole = () => {
+    res.set("Content-Length", String(size));
+    res.set("Accept-Ranges", "bytes");
+    res.set("Content-Type", contentType);
+    res.status(200);
+    const stream = fs.createReadStream(absPath);
+    stream.on("error", () => {
+      if (!res.headersSent) return res.status(500).end();
+      res.destroy();
+    });
+    stream.pipe(res);
+  };
+
   const range = req.headers.range;
   if (range) {
-    const match = range.match(/bytes=(\d+)-(\d*)/);
-    if (!match) {
-      res.set("Content-Length", String(size));
-      res.set("Accept-Ranges", "bytes");
-      res.set("Content-Type", contentType);
-      return res.status(200).end();
+    const match = range.match(/^bytes=(\d+)-(\d*)$/);
+    // RFC 7233 suffix range ("last N bytes"). Chrome's media pipeline sends these to
+    // read trailing metadata (e.g. ID3v1) before it will start decoding — fetch() never
+    // does, which is why this only ever broke real <audio> playback.
+    const suffix = range.match(/^bytes=-(\d+)$/);
+    if (!match && !suffix) {
+      // Unparseable/multi range. RFC 7233: ignore Range and serve the full representation.
+      // This previously set Content-Length to the FULL size and then ended the response
+      // with ZERO bytes, so the browser waited forever for a body that never came:
+      // readyState stuck at 0, networkState stuck at 2, and play() never settled — a
+      // silent, un-catchable hang with no console error and nothing in the server log.
+      return sendWhole();
     }
-    const start = parseInt(match[1], 10);
-    const end = match[2] ? parseInt(match[2], 10) : size - 1;
+    let start, end;
+    if (suffix) {
+      const want = parseInt(suffix[1], 10);
+      if (want <= 0) {
+        res.set("Content-Range", `bytes */${size}`);
+        return res.status(416).end();
+      }
+      start = Math.max(0, size - want);
+      end = size - 1;
+    } else {
+      start = parseInt(match[1], 10);
+      end = match[2] ? parseInt(match[2], 10) : size - 1;
+    }
     if (start >= size || end >= size || start > end) {
       res.set("Content-Range", `bytes */${size}`);
       return res.status(416).end();
